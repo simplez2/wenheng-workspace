@@ -16,7 +16,7 @@ const SessionMonitor = ({ adminToken }) => {
   useEffect(() => {
     if (viewMode === 'active') {
       fetchActiveSessions();
-      
+
       if (autoRefresh) {
         const interval = setInterval(fetchActiveSessions, 5000); // 每5秒刷新
         return () => clearInterval(interval);
@@ -30,11 +30,8 @@ const SessionMonitor = ({ adminToken }) => {
     if (!window.confirm('确定要强制停止该会话吗？')) {
       return;
     }
-    const password = prompt("请输入管理员密码以确认停止操作:");
-    if (!password) return;
-
     try {
-      await adminAPI.stopSession(sessionId, password);
+      await adminAPI.stopSession(sessionId, adminToken);
       toast.success('会话已停止');
       fetchActiveSessions();
     } catch (error) {
@@ -141,8 +138,8 @@ const SessionMonitor = ({ adminToken }) => {
             <button
               onClick={() => setViewMode('active')}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'active' 
-                  ? 'bg-white text-blue-600 shadow-sm' 
+                viewMode === 'active'
+                  ? 'bg-white text-blue-600 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -152,8 +149,8 @@ const SessionMonitor = ({ adminToken }) => {
             <button
               onClick={() => setViewMode('history')}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'history' 
-                  ? 'bg-white text-blue-600 shadow-sm' 
+                viewMode === 'history'
+                  ? 'bg-white text-blue-600 shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -161,7 +158,7 @@ const SessionMonitor = ({ adminToken }) => {
               历史会话
             </button>
           </div>
-          
+
           {viewMode === 'active' && (
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <input
@@ -227,7 +224,7 @@ const SessionMonitor = ({ adminToken }) => {
           </div>
         </div>
       )}
-      
+
       {viewMode === 'history' && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <div className="bg-white rounded-2xl shadow-ios p-6">
@@ -291,7 +288,7 @@ const SessionMonitor = ({ adminToken }) => {
         <h4 className="text-lg font-bold text-gray-900 mb-6">
           {viewMode === 'active' ? '实时会话' : '历史会话'}
         </h4>
-        
+
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />

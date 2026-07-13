@@ -17,6 +17,7 @@ from app.word_formatter.services import get_job_manager
 from app.models.models import CustomPrompt
 from app.database import SessionLocal
 from app.services.ai_service import get_default_polish_prompt, get_default_enhance_prompt
+from app.security import SecurityHeadersMiddleware, get_cors_origins, validate_runtime_security
 
 
 # 响应缓存头中间件 - 优化浏览器缓存
@@ -69,25 +70,31 @@ if settings.ADMIN_PASSWORD == "admin123":
     # 仅警告,不强制退出 (开发环境可能需要)
 
 app = FastAPI(
-    title="AI 论文润色增强系统",
-    description="高质量论文润色与原创性学术表达增强",
-    version="1.0.0"
+    title=os.getenv("APP_NAME", "文衡工作台") + " API",
+    description="文稿处理与任务管理服务",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # 添加 Gzip 压缩中间件以减少响应体积
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # 添加缓存控制中间件
 app.add_middleware(CacheControlMiddleware)
 
 # CORS 配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应设置具体域名
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins = get_cors_origins()
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # 注册路由（添加 /api 前缀，与 backend/app/main.py 保持一致）
 app.include_router(admin.router, prefix="/api")
@@ -101,6 +108,7 @@ app.include_router(word_formatter_router, prefix="/api")
 @app.on_event("startup")
 async def startup_event():
     """启动时初始化"""
+    validate_runtime_security()
     # 初始化数据库
     init_db()
 
@@ -154,7 +162,7 @@ async def shutdown_event():
 async def root():
     """根路径"""
     return {
-        "message": "AI 论文润色增强系统 API",
+        "message": os.getenv("APP_NAME", "文衡工作台") + " API",
         "version": "1.0.0",
         "docs": "/docs"
     }
@@ -168,21 +176,21 @@ async def health_check():
 
 def _check_url_format(base_url: Optional[str]) -> tuple:
     """检查 URL 格式是否正确
-    
+
     Returns:
         tuple: (is_valid, error_message)
     """
     import re
-    
+
     if not base_url or not base_url.strip():
         return False, "Base URL 未配置"
-    
+
     # 验证 base_url 是否符合 OpenAI API 格式
     # 使用更严格的 URL 验证模式
     url_pattern = re.compile(r'^https?://[^\s/$.?#].[^\s]*$', re.IGNORECASE)
     if not url_pattern.match(base_url):
         return False, "Base URL 格式不正确，应为有效的 HTTP/HTTPS URL"
-    
+
     return True, None
 
 
@@ -192,7 +200,7 @@ _url_check_cache: dict = {}
 
 async def _check_model_health(model_name: str, model: str, api_key: Optional[str], base_url: Optional[str]) -> dict:
     """检查单个模型的健康状态 - 只验证URL格式，不测试实际连接"""
-    
+
     try:
         # 检查必需的配置项
         if not model or not model.strip():
@@ -202,10 +210,10 @@ async def _check_model_health(model_name: str, model: str, api_key: Optional[str
                 "base_url": base_url,
                 "error": "模型名称未配置"
             }
-        
+
         # 先检查 URL 格式是否有效
         is_valid, error_msg = _check_url_format(base_url)
-        
+
         if not is_valid:
             return {
                 "status": "unavailable",
@@ -213,7 +221,7 @@ async def _check_model_health(model_name: str, model: str, api_key: Optional[str
                 "base_url": base_url,
                 "error": error_msg
             }
-        
+
         # URL 有效时才检查缓存（此时 base_url 不为 None）
         if base_url in _url_check_cache:
             cached_result = _url_check_cache[base_url]
@@ -225,7 +233,7 @@ async def _check_model_health(model_name: str, model: str, api_key: Optional[str
             if cached_result["status"] == "unavailable":
                 result["error"] = cached_result.get("error")
             return result
-        
+
         # URL 格式正确，认为配置有效
         result = {
             "status": "available",
@@ -235,7 +243,7 @@ async def _check_model_health(model_name: str, model: str, api_key: Optional[str
         # 缓存检查结果
         _url_check_cache[base_url] = {"status": "available"}
         return result
-        
+
     except Exception as e:
         error_msg = str(e) if str(e) else "未知错误"
         return {
@@ -252,12 +260,12 @@ async def check_models_health():
     global _url_check_cache
     # 清空缓存以确保每次请求都重新检查
     _url_check_cache = {}
-    
+
     results = {
         "overall_status": "healthy",
         "models": {}
     }
-    
+
     # 检查润色模型
     results["models"]["polish"] = await _check_model_health(
         "polish",
@@ -267,7 +275,7 @@ async def check_models_health():
     )
     if results["models"]["polish"]["status"] == "unavailable":
         results["overall_status"] = "degraded"
-    
+
     # 检查增强模型
     results["models"]["enhance"] = await _check_model_health(
         "enhance",
@@ -277,7 +285,7 @@ async def check_models_health():
     )
     if results["models"]["enhance"]["status"] == "unavailable":
         results["overall_status"] = "degraded"
-    
+
     # 检查感情润色模型（如果配置了）
     if settings.EMOTION_MODEL:
         results["models"]["emotion"] = await _check_model_health(
@@ -288,7 +296,7 @@ async def check_models_health():
         )
         if results["models"]["emotion"]["status"] == "unavailable":
             results["overall_status"] = "degraded"
-    
+
     return results
 
 

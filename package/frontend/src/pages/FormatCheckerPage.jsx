@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, Link, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
-  ArrowLeft, ArrowRight, FileText, Upload, Play, Download,
+  ArrowRight, FileText, Upload, Play, Download,
   CheckCircle, AlertCircle, Loader2, Settings, Eye, Edit3,
   Trash2, RefreshCw, FileUp, X, ChevronDown, ChevronUp,
   Hash, Type, List, BookOpen, Quote, Table, Image, Code,
   AlertTriangle, Info, Search, Filter
 } from 'lucide-react';
 import { wordFormatterAPI } from '../api';
+import WorkspaceHeader from '../components/WorkspaceHeader';
 
 // Paragraph type configuration with icons and colors
 const PARAGRAPH_TYPES = {
@@ -378,38 +379,29 @@ const FormatCheckerPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link
-              to="/spec-generator"
-              className="flex items-center gap-1 text-gray-600 hover:text-gray-900"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm">返回规范生成</span>
-            </Link>
-            <div className="h-6 w-px bg-gray-300" />
-            <h1 className="text-lg font-semibold text-gray-900">文章格式检测</h1>
-          </div>
-
-          <div className="flex items-center gap-4">
+      <WorkspaceHeader
+        rightContent={(
+          <div className="hidden items-center gap-2 sm:flex">
             {usage && (
-              <div className="text-sm text-gray-600">
-                使用量: {usage.usage_count}/{usage.usage_limit > 0 ? usage.usage_limit : '∞'}
-              </div>
+              <span className="text-xs text-slate-500">
+                使用量 {usage.usage_count}/{usage.usage_limit > 0 ? usage.usage_limit : '∞'}
+              </span>
             )}
             {selectedSpec && (
-              <div className="flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 rounded text-sm">
-                <CheckCircle className="w-4 h-4" />
-                已选规范: {specName || '自定义'}
-              </div>
+              <span className="hidden items-center gap-1 rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 xl:flex">
+                <CheckCircle className="h-3.5 w-3.5" />
+                {specName || '自定义规范'}
+              </span>
             )}
           </div>
-        </div>
-      </header>
+        )}
+      />
 
       <main className="max-w-7xl mx-auto px-4 py-6">
+        <div className="mb-5">
+          <h1 className="text-xl font-semibold text-slate-950">格式检查</h1>
+          <p className="mt-1 text-sm text-slate-500">按选定规范检查文章结构与格式，并定位需要修正的内容。</p>
+        </div>
         {/* Workflow indicator */}
         <div className="mb-6 flex items-center justify-center gap-2 text-sm text-gray-500">
           <span className="px-3 py-1 bg-gray-100 rounded-full">1. 生成规范</span>

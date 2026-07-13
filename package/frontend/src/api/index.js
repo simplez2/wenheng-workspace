@@ -17,10 +17,7 @@ api.interceptors.request.use(
   (config) => {
     const cardKey = localStorage.getItem('cardKey');
     if (cardKey) {
-      config.params = {
-        ...config.params,
-        card_key: cardKey,
-      };
+      config.headers['X-Card-Key'] = cardKey;
     }
     return config;
   },
@@ -45,25 +42,25 @@ api.interceptors.response.use(
 
 // Admin API
 export const adminAPI = {
-  generateKeys: (data, password) =>
+  generateKeys: (data, token) =>
     api.post('/admin/generate-keys', data, {
-      params: { admin_password: password },
+      headers: { Authorization: `Bearer ${token}` },
     }),
-  listUsers: (password) =>
+  listUsers: (token) =>
     api.get('/admin/users', {
-      params: { admin_password: password },
+      headers: { Authorization: `Bearer ${token}` },
     }),
-  deleteUser: (userId, password) =>
+  deleteUser: (userId, token) =>
     api.delete(`/admin/users/${userId}`, {
-      params: { admin_password: password },
+      headers: { Authorization: `Bearer ${token}` },
     }),
-  stopSession: (sessionId, password) =>
+  stopSession: (sessionId, token) =>
     api.post(`/admin/sessions/${sessionId}/stop`, null, {
-      params: { admin_password: password },
+      headers: { Authorization: `Bearer ${token}` },
     }),
-  toggleUserActive: (userId, password) =>
-    api.put(`/admin/users/${userId}/toggle-active`, null, {
-      params: { admin_password: password },
+  toggleUserActive: (userId, token) =>
+    api.patch(`/admin/users/${userId}/toggle`, null, {
+      headers: { Authorization: `Bearer ${token}` },
     }),
 };
 
@@ -86,6 +83,14 @@ export const optimizationAPI = {
   startOptimization: (data) => api.post('/optimization/start', data, {
     timeout: 60000, // 启动任务延长到60秒超时
   }),
+  startFileOptimization: (file, processingMode) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('processing_mode', processingMode);
+    return api.post('/optimization/start-file', formData, {
+      timeout: 120000,
+    });
+  },
   getQueueStatus: (sessionId = null) =>
     api.get('/optimization/status', {
       params: sessionId ? { session_id: sessionId } : {},
@@ -113,19 +118,19 @@ export const optimizationAPI = {
   exportSession: (sessionId, confirmation) =>
     api.post(`/optimization/sessions/${sessionId}/export`, confirmation, {
       timeout: 30000, // 30秒超时
+      responseType: 'blob',
     }),
   deleteSession: (sessionId) =>
     api.delete(`/optimization/sessions/${sessionId}`, {
       timeout: 10000, // 10秒超时
     }),
-  retryFailedSegments: (sessionId) =>
+  resumeSession: (sessionId) =>
     api.post(`/optimization/sessions/${sessionId}/retry`, null, {
       timeout: 15000, // 15秒超时
     }),
   getStreamUrl: (sessionId) => {
-    const cardKey = localStorage.getItem('cardKey');
     const baseUrl = api.defaults.baseURL || '/api';
-    return `${baseUrl}/optimization/sessions/${sessionId}/stream?card_key=${cardKey}`;
+    return `${baseUrl}/optimization/sessions/${sessionId}/stream`;
   },
 };
 
@@ -174,9 +179,13 @@ export const wordFormatterAPI = {
   formatFile: (file, options = {}) => {
     const formData = new FormData();
     formData.append('file', file);
+    const customSpecJson = options.custom_spec_json || options.spec_json;
+    if (customSpecJson) {
+      formData.append('custom_spec_json', customSpecJson);
+    }
+    const { custom_spec_json, spec_json, ...queryOptions } = options;
     return api.post('/word-formatter/format/file', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      params: options,
+      params: queryOptions,
       timeout: 120000,
     });
   },
@@ -187,19 +196,15 @@ export const wordFormatterAPI = {
     api.get('/word-formatter/jobs', { params: { limit } }),
   deleteJob: (jobId) => api.delete(`/word-formatter/jobs/${jobId}`),
   getJobReport: (jobId) => api.get(`/word-formatter/jobs/${jobId}/report`),
-
-  // Download
-  getDownloadUrl: (jobId) => {
-    const cardKey = localStorage.getItem('cardKey');
-    const baseUrl = api.defaults.baseURL || '/api';
-    return `${baseUrl}/word-formatter/jobs/${jobId}/download?card_key=${cardKey}`;
-  },
+  downloadJob: (jobId) => api.get(`/word-formatter/jobs/${jobId}/download`, {
+    responseType: 'blob',
+    timeout: 120000,
+  }),
 
   // SSE stream URL
   getStreamUrl: (jobId) => {
-    const cardKey = localStorage.getItem('cardKey');
     const baseUrl = api.defaults.baseURL || '/api';
-    return `${baseUrl}/word-formatter/jobs/${jobId}/stream?card_key=${cardKey}`;
+    return `${baseUrl}/word-formatter/jobs/${jobId}/stream`;
   },
 
   // Preprocess text
@@ -228,9 +233,8 @@ export const wordFormatterAPI = {
 
   // Preprocess stream URL
   getPreprocessStreamUrl: (jobId) => {
-    const cardKey = localStorage.getItem('cardKey');
     const baseUrl = api.defaults.baseURL || '/api';
-    return `${baseUrl}/word-formatter/preprocess/${jobId}/stream?card_key=${cardKey}`;
+    return `${baseUrl}/word-formatter/preprocess/${jobId}/stream`;
   },
 
   // Get preprocess result

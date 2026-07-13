@@ -1,0 +1,9 @@
+Wenheng Workspace is an adapted distribution of BypassAIGC.
+
+Original project: https://github.com/chi111i/BypassAIGC
+Original copyright: Copyright (c) 2025 Yan Wenxin
+
+This distribution includes substantial changes to the user interface, document
+round-trip support, Word formatting, task concurrency, deployment, and security
+controls. It remains licensed under CC BY-NC-SA 4.0. Commercial use is not
+permitted by the upstream license.

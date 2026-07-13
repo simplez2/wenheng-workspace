@@ -1,0 +1,53 @@
+version: "2.4"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: package/Dockerfile
+    image: wenheng-workspace:latest
+    container_name: wenheng-workspace
+    restart: unless-stopped
+    env_file:
+      - app.env
+    environment:
+      APP_DATA_DIR: /data
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 9800
+      DATABASE_URL: sqlite:////data/wenheng.db
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ""
+      AI_REQUEST_LOGGING: "false"
+    ports:
+      - "127.0.0.1:9800:9800"
+    volumes:
+      - ./data:/data
+      - ./app.env:/app/.env:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9800/health', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    mem_limit: 1g
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    container_name: wenheng-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true

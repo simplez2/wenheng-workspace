@@ -8,18 +8,20 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import datetime
 from typing import List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import settings
 from app.database import get_db
+from app.dependencies import UserCardKey
 from app.models.models import User, SavedSpec
 from app.services.ai_service import AIService
 
@@ -108,7 +110,9 @@ class SpecListResponse(BaseModel):
 
 class SpecSchemaResponse(BaseModel):
     """Response for spec schema."""
-    schema: dict
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_data: dict = Field(alias="schema")
 
 
 class UsageInfoResponse(BaseModel):
@@ -278,7 +282,7 @@ def get_ai_service() -> AIService:
 
 @router.get("/usage", response_model=UsageInfoResponse)
 async def get_usage_info(
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Get user's usage information (shared with polishing)."""
@@ -319,7 +323,7 @@ async def validate_spec(spec_json: str):
 
 @router.post("/specs/generate")
 async def generate_spec(
-    card_key: str,
+    card_key: UserCardKey,
     request: GenerateSpecRequest,
     db: Session = Depends(get_db)
 ):
@@ -353,7 +357,7 @@ async def generate_spec(
 
 @router.post("/format/text", response_model=JobResponse)
 async def format_text(
-    card_key: str,
+    card_key: UserCardKey,
     request: FormatRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -420,8 +424,9 @@ async def format_text(
 
 @router.post("/format/file", response_model=JobResponse)
 async def format_file(
-    card_key: str,
+    card_key: UserCardKey,
     file: UploadFile = File(...),
+    custom_spec_json: Optional[str] = Form(None),
     input_format: str = Query("auto"),
     spec_name: Optional[str] = Query(None),
     include_cover: bool = Query(True),
@@ -493,10 +498,18 @@ async def format_file(
     except ValueError:
         fmt = detected_format
 
+    custom_spec = None
+    if custom_spec_json:
+        try:
+            custom_spec = validate_custom_spec(custom_spec_json)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"自定义规范无效: {e}")
+
     # Create compile options
     options = CompileOptions(
         input_format=fmt,
         spec_name=spec_name,
+        custom_spec=custom_spec,
         include_cover=include_cover,
         include_toc=include_toc,
         toc_title=toc_title,
@@ -509,6 +522,7 @@ async def format_file(
         user_id=str(user.id),
         input_text=text,
         input_file_name=file.filename,
+        input_docx_bytes=content if ext == "docx" else None,
         options=options,
     )
 
@@ -529,7 +543,7 @@ async def format_file(
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(
     job_id: str,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Get job status and progress."""
@@ -560,7 +574,7 @@ async def get_job_status(
 async def stream_job_progress(
     job_id: str,
     request: Request,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Stream job progress via SSE."""
@@ -590,7 +604,7 @@ async def stream_job_progress(
 @router.get("/jobs/{job_id}/download")
 async def download_result(
     job_id: str,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Download the formatted document."""
@@ -620,7 +634,7 @@ async def download_result(
     # Provide ASCII-safe fallback for legacy clients
     try:
         filename.encode('ascii')
-        ascii_fallback = filename
+        ascii_fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", filename)[:180] or "download.docx"
     except UnicodeEncodeError:
         # For non-ASCII filenames, provide a generic fallback
         ascii_fallback = "download.docx"
@@ -637,7 +651,7 @@ async def download_result(
 @router.get("/jobs/{job_id}/report")
 async def get_validation_report(
     job_id: str,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Get the validation report for a completed job."""
@@ -683,7 +697,7 @@ async def get_validation_report(
 @router.delete("/jobs/{job_id}")
 async def delete_job(
     job_id: str,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Delete a job and its data."""
@@ -705,7 +719,7 @@ async def delete_job(
 
 @router.get("/jobs")
 async def list_jobs(
-    card_key: str,
+    card_key: UserCardKey,
     limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db)
 ):
@@ -735,7 +749,7 @@ async def list_jobs(
 
 @router.post("/preprocess/text", response_model=PreprocessJobResponse)
 async def preprocess_text(
-    card_key: str,
+    card_key: UserCardKey,
     request: PreprocessRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -779,7 +793,7 @@ async def preprocess_text(
 
 @router.post("/preprocess/file", response_model=PreprocessJobResponse)
 async def preprocess_file(
-    card_key: str,
+    card_key: UserCardKey,
     file: UploadFile = File(...),
     chunk_paragraphs: int = Query(40, ge=10, le=100),
     chunk_chars: int = Query(8000, ge=2000, le=15000),
@@ -864,7 +878,7 @@ async def preprocess_file(
 async def stream_preprocess_progress(
     job_id: str,
     request: Request,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Stream preprocessing progress via SSE."""
@@ -897,7 +911,7 @@ async def stream_preprocess_progress(
 @router.get("/preprocess/{job_id}/result", response_model=PreprocessResultResponse)
 async def get_preprocess_result(
     job_id: str,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Get preprocessing result."""
@@ -951,7 +965,7 @@ async def get_preprocess_result(
 @router.delete("/preprocess/{job_id}")
 async def delete_preprocess_job(
     job_id: str,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Delete a preprocess job."""
@@ -978,7 +992,7 @@ async def delete_preprocess_job(
 
 @router.post("/specs/save", response_model=SavedSpecResponse)
 async def save_spec(
-    card_key: str,
+    card_key: UserCardKey,
     request: SaveSpecRequest,
     db: Session = Depends(get_db)
 ):
@@ -1040,7 +1054,7 @@ async def save_spec(
 
 @router.get("/specs/saved", response_model=SavedSpecListResponse)
 async def list_saved_specs(
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """List user's saved specs."""
@@ -1068,7 +1082,7 @@ async def list_saved_specs(
 @router.get("/specs/saved/{spec_id}", response_model=SavedSpecResponse)
 async def get_saved_spec(
     spec_id: int,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Get a specific saved spec."""
@@ -1095,7 +1109,7 @@ async def get_saved_spec(
 @router.delete("/specs/saved/{spec_id}")
 async def delete_saved_spec(
     spec_id: int,
-    card_key: str,
+    card_key: UserCardKey,
     db: Session = Depends(get_db)
 ):
     """Delete a saved spec."""
@@ -1127,7 +1141,7 @@ async def get_paragraph_types():
 
 @router.post("/format-check/text", response_model=FormatCheckResponse)
 async def format_check_text(
-    card_key: str,
+    card_key: UserCardKey,
     request: FormatCheckRequest,
     db: Session = Depends(get_db)
 ):
@@ -1196,7 +1210,7 @@ async def format_check_text(
 
 @router.post("/format-check/file", response_model=FormatCheckResponse)
 async def format_check_file(
-    card_key: str,
+    card_key: UserCardKey,
     file: UploadFile = File(...),
     mode: str = Query("loose", description="检测模式: loose(宽松) 或 strict(严格)"),
     db: Session = Depends(get_db)

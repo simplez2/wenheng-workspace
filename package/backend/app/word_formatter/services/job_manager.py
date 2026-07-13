@@ -26,6 +26,7 @@ from .compiler import (
     CompileResult,
     compile_document,
 )
+from .existing_docx_formatter import format_existing_docx
 from .preprocessor import (
     ArticlePreprocessor,
     PreprocessConfig,
@@ -67,6 +68,7 @@ class Job:
     updated_at: datetime
     input_text: Optional[str] = None
     input_file_name: Optional[str] = None
+    input_docx_bytes: Optional[bytes] = None
     # Format job fields
     options: Optional[CompileOptions] = None
     result: Optional[CompileResult] = None
@@ -103,6 +105,7 @@ class JobManager:
         user_id: Optional[str] = None,
         input_text: Optional[str] = None,
         input_file_name: Optional[str] = None,
+        input_docx_bytes: Optional[bytes] = None,
         options: Optional[CompileOptions] = None,
         preprocess_config: Optional[PreprocessConfig] = None,
     ) -> Job:
@@ -119,6 +122,7 @@ class JobManager:
             updated_at=now,
             input_text=input_text,
             input_file_name=input_file_name,
+            input_docx_bytes=input_docx_bytes,
             options=options,
             preprocess_config=preprocess_config,
         )
@@ -209,11 +213,22 @@ class JobManager:
 
         options = job.options or CompileOptions()
 
-        result = compile_document(
-            job.input_text or "",
-            options,
-            progress_callback,
-        )
+        if job.input_docx_bytes is not None:
+            source_bytes = job.input_docx_bytes
+            try:
+                result = format_existing_docx(
+                    source_bytes,
+                    options,
+                    progress_callback,
+                )
+            finally:
+                job.input_docx_bytes = None
+        else:
+            result = compile_document(
+                job.input_text or "",
+                options,
+                progress_callback,
+            )
 
         job.result = result
 
@@ -270,7 +285,8 @@ class JobManager:
     def _generate_output_filename(self, job: Job) -> str:
         """Generate output filename based on input."""
         if job.input_file_name:
-            base = job.input_file_name.rsplit(".", 1)[0]
+            safe_name = job.input_file_name.replace("\\", "/").rsplit("/", 1)[-1]
+            base = safe_name.rsplit(".", 1)[0].strip()[:180] or "formatted"
             return f"{base}_formatted.docx"
         return f"formatted_{job.job_id[:8]}.docx"
 

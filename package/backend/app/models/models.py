@@ -8,7 +8,7 @@ from app.config import settings
 class User(Base):
     """用户表"""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     card_key = Column(String(255), unique=True, index=True, nullable=False)
     access_link = Column(String(255), unique=True, index=True, nullable=False)
@@ -17,7 +17,8 @@ class User(Base):
     last_used = Column(DateTime, nullable=True)
     usage_limit = Column(Integer, default=settings.DEFAULT_USAGE_LIMIT)
     usage_count = Column(Integer, default=0)
-    
+    task_concurrency_limit = Column(Integer, default=settings.DEFAULT_TASK_CONCURRENCY_LIMIT)
+
     # 关系
     sessions = relationship("OptimizationSession", back_populates="user")
     prompts = relationship("CustomPrompt", back_populates="user")
@@ -27,7 +28,7 @@ class User(Base):
 class CustomPrompt(Base):
     """自定义提示词表"""
     __tablename__ = "custom_prompts"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     name = Column(String(255), nullable=False)
@@ -38,7 +39,7 @@ class CustomPrompt(Base):
     is_active = Column(Boolean, default=True)  # 是否启用
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # 关系
     user = relationship("User", back_populates="prompts")
 
@@ -46,11 +47,14 @@ class CustomPrompt(Base):
 class OptimizationSession(Base):
     """优化会话表"""
     __tablename__ = "optimization_sessions"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     session_id = Column(String(255), unique=True, index=True)
     original_text = Column(Text)
+    source_format = Column(String(20), nullable=True)
+    source_filename = Column(String(255), nullable=True)
+    source_manifest = Column(Text, nullable=True)
     current_stage = Column(String(50))  # 'polish' 或 'enhance'
     status = Column(String(50), index=True)  # 'queued', 'processing', 'completed', 'failed'
     progress = Column(Float, default=0.0)
@@ -61,7 +65,7 @@ class OptimizationSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
-    
+
     # 模型配置
     polish_model = Column(String(100), nullable=True)
     polish_api_key = Column(String(255), nullable=True)
@@ -72,10 +76,10 @@ class OptimizationSession(Base):
     emotion_model = Column(String(100), nullable=True)
     emotion_api_key = Column(String(255), nullable=True)
     emotion_base_url = Column(String(255), nullable=True)
-    
+
     # 处理模式: 'paper_polish', 'paper_enhance', 'paper_polish_enhance', 'emotion_polish'
     processing_mode = Column(String(50), default='paper_polish_enhance')
-    
+
     # 关系
     user = relationship("User", back_populates="sessions")
     segments = relationship("OptimizationSegment", back_populates="session", cascade="all, delete-orphan")
@@ -90,7 +94,7 @@ class OptimizationSession(Base):
 class OptimizationSegment(Base):
     """优化段落表"""
     __tablename__ = "optimization_segments"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("optimization_sessions.id"), index=True)
     segment_index = Column(Integer, index=True)  # 段落序号
@@ -102,7 +106,7 @@ class OptimizationSegment(Base):
     is_title = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
-    
+
     # 关系
     session = relationship("OptimizationSession", back_populates="segments")
 
@@ -110,7 +114,7 @@ class OptimizationSegment(Base):
 class SessionHistory(Base):
     """会话历史表 (用于AI上下文)"""
     __tablename__ = "session_history"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("optimization_sessions.id"))
     stage = Column(String(50))  # 'polish' 或 'enhance'
@@ -118,7 +122,7 @@ class SessionHistory(Base):
     is_compressed = Column(Boolean, default=False)
     character_count = Column(Integer, default=0)  # 汉字数量
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # 关系
     session = relationship("OptimizationSession", back_populates="history")
 
@@ -126,7 +130,7 @@ class SessionHistory(Base):
 class ChangeLog(Base):
     """变更对照记录表 (用于学术审计)"""
     __tablename__ = "change_logs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("optimization_sessions.id"), index=True)
     segment_index = Column(Integer, index=True)
@@ -140,7 +144,7 @@ class ChangeLog(Base):
 class QueueStatus(Base):
     """队列状态表"""
     __tablename__ = "queue_status"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String(255), unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -19,7 +19,8 @@ class UserResponse(BaseModel):
     last_used: Optional[datetime] = None
     usage_limit: int
     usage_count: int
-    
+    task_concurrency_limit: int
+
     class Config:
         from_attributes = True
 
@@ -29,6 +30,12 @@ class ModelConfig(BaseModel):
     model: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+
+    @model_validator(mode="after")
+    def require_key_for_custom_endpoint(self):
+        if self.base_url and not self.api_key:
+            raise ValueError("A custom Base URL requires a matching API key")
+        return self
 
 
 class OptimizationCreate(BaseModel):
@@ -53,7 +60,7 @@ class SegmentResponse(BaseModel):
     is_title: bool
     created_at: datetime
     completed_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -71,10 +78,12 @@ class SessionResponse(BaseModel):
     preview_text: Optional[str] = None
     error_message: Optional[str] = None
     processing_mode: str = 'paper_polish_enhance'
+    source_format: Optional[str] = None
+    source_filename: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -91,6 +100,9 @@ class QueueStatusResponse(BaseModel):
     queue_length: int
     your_position: Optional[int] = None
     estimated_wait_time: Optional[int] = None  # 秒
+    user_active_tasks: int = 0
+    user_task_limit: int = 1
+    can_submit: bool = True
 
 
 class ProgressUpdate(BaseModel):
@@ -113,7 +125,7 @@ class ChangeLogResponse(BaseModel):
     after_text: str
     changes_detail: Optional[Dict[str, Any]] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -122,7 +134,7 @@ class ExportConfirmation(BaseModel):
     """导出确认"""
     session_id: str
     acknowledge_academic_integrity: bool
-    export_format: str = Field(..., pattern="^(txt|docx|pdf)$")
+    export_format: str = Field(..., pattern="^(txt|md|docx|pdf)$")
 
 
 class CardKeyGenerate(BaseModel):
@@ -142,6 +154,7 @@ class UserUsageUpdate(BaseModel):
     """更新用户使用限制"""
     usage_limit: int = Field(..., ge=0)  # 0 表示无限制
     reset_usage_count: bool = False
+    task_concurrency_limit: Optional[int] = Field(None, ge=1, le=100)
 
 
 class DatabaseUpdateRequest(BaseModel):
@@ -177,6 +190,6 @@ class PromptResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True

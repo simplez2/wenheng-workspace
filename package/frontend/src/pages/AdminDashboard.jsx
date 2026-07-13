@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { APP_NAME } from '../branding';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
 import {
@@ -14,7 +15,6 @@ import {
   Plus,
   TrendingUp,
   Activity,
-  Calendar,
   Eye,
   Download,
   RefreshCw,
@@ -30,12 +30,88 @@ import ConfigManager from '../components/ConfigManager';
 import SessionMonitor from '../components/SessionMonitor';
 import DatabaseManager from '../components/DatabaseManager';
 
+const TAB_ITEMS = [
+  { id: 'dashboard', label: '数据面板', icon: BarChart3 },
+  { id: 'sessions', label: '会话监控', icon: Activity },
+  { id: 'database', label: '数据库管理', icon: Database },
+  { id: 'config', label: '系统配置', icon: Settings }
+];
+
+const METRIC_TONES = {
+  slate: {
+    icon: 'bg-slate-100 text-slate-600',
+    detail: 'bg-slate-100 text-slate-600'
+  },
+  blue: {
+    icon: 'bg-blue-50 text-blue-600',
+    detail: 'bg-blue-50 text-blue-700'
+  },
+  green: {
+    icon: 'bg-emerald-50 text-emerald-600',
+    detail: 'bg-emerald-50 text-emerald-700'
+  },
+  amber: {
+    icon: 'bg-amber-50 text-amber-600',
+    detail: 'bg-amber-50 text-amber-700'
+  },
+  teal: {
+    icon: 'bg-teal-50 text-teal-600',
+    detail: 'bg-teal-50 text-teal-700'
+  },
+  rose: {
+    icon: 'bg-rose-50 text-rose-600',
+    detail: 'bg-rose-50 text-rose-700'
+  }
+};
+
+const MetricCard = ({ label, value, icon: Icon, detail, tone = 'blue', suffix }) => {
+  const colors = METRIC_TONES[tone] || METRIC_TONES.blue;
+
+  return (
+    <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-medium text-slate-500">{label}</p>
+          <p className="mt-1 text-2xl font-semibold text-slate-950">
+            {value}
+            {suffix && <span className="ml-1 text-xs font-medium text-slate-500">{suffix}</span>}
+          </p>
+          {detail && (
+            <span className={`mt-2 inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium ${colors.detail}`}>
+              {detail}
+            </span>
+          )}
+        </div>
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${colors.icon}`}>
+          <Icon className="h-4.5 w-4.5" />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DateTime = ({ value, emptyText = '从未使用' }) => {
+  if (!value) {
+    return <span className="text-slate-400">{emptyText}</span>;
+  }
+
+  const date = new Date(value);
+  return (
+    <span className="block leading-5">
+      <span className="block text-slate-700">{date.toLocaleDateString('zh-CN')}</span>
+      <span className="block text-xs text-slate-400">
+        {date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+      </span>
+    </span>
+  );
+};
+
 const AdminDashboard = () => {
   const navigate = useNavigate();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [adminToken, setAdminToken] = useState(localStorage.getItem('adminToken'));
-  
+
   // Tab state
   const [activeTab, setActiveTab] = useState('dashboard');
 
@@ -54,17 +130,18 @@ const AdminDashboard = () => {
   // Card key generation state
   const [newCardKey, setNewCardKey] = useState('');
   const [generatedKey, setGeneratedKey] = useState('');
-  
+
   // Batch generation state
   const [batchCount, setBatchCount] = useState(5);
   const [batchPrefix, setBatchPrefix] = useState('');
   const [batchUsageLimit, setBatchUsageLimit] = useState(1);
   const [showBatchModal, setShowBatchModal] = useState(false);
-  
+
   // Edit usage limit modal
   const [editingUserId, setEditingUserId] = useState(null);
   const [newUsageLimit, setNewUsageLimit] = useState('');
-  
+  const [newTaskConcurrencyLimit, setNewTaskConcurrencyLimit] = useState('1');
+
   // User details modal
   const [selectedUser, setSelectedUser] = useState(null);
   const [userDetails, setUserDetails] = useState(null);
@@ -168,11 +245,11 @@ const AdminDashboard = () => {
     }
 
     try {
-      const response = await axios.post('/api/admin/card-keys', 
+      const response = await axios.post('/api/admin/card-keys',
         { card_key: newCardKey },
         { headers: { Authorization: `Bearer ${adminToken}` } }
       );
-      
+
       setGeneratedKey(response.data.card_key);
       setNewCardKey('');
       toast.success('卡密生成成功！');
@@ -184,7 +261,7 @@ const AdminDashboard = () => {
 
   const handleToggleUserStatus = async (userId, currentStatus) => {
     try {
-      await axios.patch(`/api/admin/users/${userId}/toggle`, 
+      await axios.patch(`/api/admin/users/${userId}/toggle`,
         {},
         { headers: { Authorization: `Bearer ${adminToken}` } }
       );
@@ -226,15 +303,15 @@ const AdminDashboard = () => {
       const response = await axios.post('/api/admin/batch-generate-keys',
         null,
         {
-          params: { 
-            count: batchCount, 
+          params: {
+            count: batchCount,
             prefix: batchPrefix,
             usage_limit: batchUsageLimit
           },
           headers: { Authorization: `Bearer ${adminToken}` }
         }
       );
-      
+
       toast.success(`成功生成 ${response.data.count} 个卡密`);
       setShowBatchModal(false);
       setBatchCount(5);
@@ -251,12 +328,16 @@ const AdminDashboard = () => {
     try {
       await axios.patch(
         `/api/admin/users/${userId}/usage`,
-        { usage_limit: parseInt(newLimit) },
+        {
+          usage_limit: parseInt(newLimit),
+          task_concurrency_limit: parseInt(newTaskConcurrencyLimit),
+        },
         { headers: { Authorization: `Bearer ${adminToken}` } }
       );
       toast.success('使用次数已更新');
       setEditingUserId(null);
       setNewUsageLimit('');
+      setNewTaskConcurrencyLimit('1');
       fetchUsers();
     } catch (error) {
       toast.error(error.response?.data?.detail || '更新失败');
@@ -284,12 +365,12 @@ const AdminDashboard = () => {
       new Date(user.created_at).toLocaleString('zh-CN'),
       user.last_used ? new Date(user.last_used).toLocaleString('zh-CN') : '从未使用'
     ]);
-    
+
     const csvContent = [
       headers.join(','),
       ...rows.map(row => row.join(','))
     ].join('\n');
-    
+
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -309,10 +390,10 @@ const AdminDashboard = () => {
             </div>
           </div>
           <h1 className="text-3xl font-bold text-center mb-2 text-gray-800">
-            管理后台
+            {APP_NAME} 管理台
           </h1>
           <p className="text-center text-gray-600 mb-8">
-            请使用管理员账号登录
+            使用管理员账号进入系统管理
           </p>
 
           <form onSubmit={handleLogin} className="space-y-6">
@@ -378,354 +459,176 @@ const AdminDashboard = () => {
 
   // Admin Dashboard
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-slate-50 text-slate-900">
       {/* Header */}
-      <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Shield className="w-8 h-8 text-blue-600" />
-              <h1 className="text-2xl font-bold text-gray-800">管理后台</h1>
+      <div className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-50">
+                <Shield className="h-5 w-5 text-blue-600" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="truncate text-lg font-semibold text-slate-950 sm:text-xl">{APP_NAME} 管理台</h1>
+                <p className="hidden text-xs text-slate-500 sm:block">运行状态与访问权限管理</p>
+              </div>
             </div>
             <button
               onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+              className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-red-200 bg-white px-3 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
+              title="退出登录"
             >
-              <LogOut className="w-5 h-5" />
-              退出登录
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:inline">退出登录</span>
             </button>
+        </div>
+      </div>
+
+      {/* Tabs Navigation */}
+      <div className="border-b border-slate-200 bg-white">
+        <div className="mx-auto max-w-[1600px] px-4 sm:px-6">
+          <div className="grid grid-cols-2 gap-1 py-2 sm:flex sm:overflow-x-auto sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
+            {TAB_ITEMS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className={`flex h-10 w-full items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition-colors sm:w-auto sm:shrink-0 sm:px-4 ${
+                  activeTab === id
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                <span>{label}</span>
+              </button>
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Tabs Navigation - Enhanced Design */}
-      <div className="bg-gradient-to-r from-gray-50 via-white to-gray-50 border-b border-gray-200 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex space-x-2 overflow-x-auto py-3">
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`group relative flex items-center gap-2.5 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ease-out ${
-                activeTab === 'dashboard'
-                  ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg shadow-blue-500/30 scale-105'
-                  : 'bg-white text-gray-600 hover:text-blue-600 hover:bg-blue-50 hover:shadow-md border border-gray-200'
-              }`}
-            >
-              <BarChart3 className={`w-5 h-5 transition-transform duration-300 ${
-                activeTab === 'dashboard' ? 'scale-110' : 'group-hover:scale-110'
-              }`} />
-              <span className="whitespace-nowrap">数据面板</span>
-              {activeTab === 'dashboard' && (
-                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-12 h-1 bg-white rounded-full"></div>
-              )}
-            </button>
-            
-            <button
-              onClick={() => setActiveTab('sessions')}
-              className={`group relative flex items-center gap-2.5 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ease-out ${
-                activeTab === 'sessions'
-                  ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg shadow-blue-500/30 scale-105'
-                  : 'bg-white text-gray-600 hover:text-blue-600 hover:bg-blue-50 hover:shadow-md border border-gray-200'
-              }`}
-            >
-              <Activity className={`w-5 h-5 transition-transform duration-300 ${
-                activeTab === 'sessions' ? 'scale-110' : 'group-hover:scale-110'
-              }`} />
-              <span className="whitespace-nowrap">会话监控</span>
-              {activeTab === 'sessions' && (
-                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-12 h-1 bg-white rounded-full"></div>
-              )}
-            </button>
-            
-            <button
-              onClick={() => setActiveTab('database')}
-              className={`group relative flex items-center gap-2.5 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ease-out ${
-                activeTab === 'database'
-                  ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-500/30 scale-105'
-                  : 'bg-white text-gray-600 hover:text-emerald-600 hover:bg-emerald-50 hover:shadow-md border border-gray-200'
-              }`}
-            >
-              <Database className={`w-5 h-5 transition-transform duration-300 ${
-                activeTab === 'database' ? 'scale-110' : 'group-hover:scale-110'
-              }`} />
-              <span className="whitespace-nowrap">数据库管理</span>
-              {activeTab === 'database' && (
-                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-12 h-1 bg-white rounded-full"></div>
-              )}
-            </button>
-            
-            <button
-              onClick={() => setActiveTab('config')}
-              className={`group relative flex items-center gap-2.5 px-6 py-3 rounded-xl font-semibold transition-all duration-300 ease-out ${
-                activeTab === 'config'
-                  ? 'bg-gradient-to-r from-amber-600 to-amber-500 text-white shadow-lg shadow-amber-500/30 scale-105'
-                  : 'bg-white text-gray-600 hover:text-amber-600 hover:bg-amber-50 hover:shadow-md border border-gray-200'
-              }`}
-            >
-              <Settings className={`w-5 h-5 transition-transform duration-300 ${
-                activeTab === 'config' ? 'scale-110' : 'group-hover:scale-110'
-              }`} />
-              <span className="whitespace-nowrap">系统配置</span>
-              {activeTab === 'config' && (
-                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-12 h-1 bg-white rounded-full"></div>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 sm:py-6">
         {/* Tab Content */}
         {activeTab === 'dashboard' && (
           <>
             {/* Statistics Cards */}
             {statistics && (
               <>
-                {/* 第一行：用户和会话统计 */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-                  {/* Total Users */}
-                  <div className="bg-white rounded-2xl shadow-ios p-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-gray-500 mb-1">总用户数</p>
-                        <p className="text-3xl font-bold text-gray-900 tracking-tight">{statistics.users.total}</p>
-                        <div className="flex items-center gap-1 mt-2">
-                          <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
-                            +{statistics.users.today_new} 今日
-                          </span>
-                        </div>
-                      </div>
-                      <div className="w-12 h-12 bg-gray-50 rounded-xl flex items-center justify-center">
-                        <Users className="w-6 h-6 text-gray-600" />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Active Users */}
-                  <div className="bg-white rounded-2xl shadow-ios p-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-gray-500 mb-1">启用用户</p>
-                        <p className="text-3xl font-bold text-gray-900 tracking-tight">{statistics.users.active}</p>
-                        <div className="flex items-center gap-1 mt-2">
-                          <span className="text-xs font-medium text-gray-500 bg-gray-50 px-2 py-0.5 rounded-full">
-                            {statistics.users.inactive} 禁用
-                          </span>
-                        </div>
-                      </div>
-                      <div className="w-12 h-12 bg-green-50 rounded-xl flex items-center justify-center">
-                        <CheckCircle className="w-6 h-6 text-green-600" />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Today Active */}
-                  <div className="bg-white rounded-2xl shadow-ios p-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-gray-500 mb-1">今日活跃</p>
-                        <p className="text-3xl font-bold text-gray-900 tracking-tight">{statistics.users.today_active}</p>
-                        <div className="flex items-center gap-1 mt-2">
-                          <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
-                            {statistics.users.recent_active_7days} (7日)
-                          </span>
-                        </div>
-                      </div>
-                      <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center">
-                        <Activity className="w-6 h-6 text-blue-600" />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Total Sessions */}
-                  <div className="bg-white rounded-2xl shadow-ios p-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-gray-500 mb-1">总会话数</p>
-                        <p className="text-3xl font-bold text-gray-900 tracking-tight">{statistics.sessions.total}</p>
-                        <div className="flex items-center gap-1 mt-2">
-                          <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
-                            {statistics.sessions.today} 今日
-                          </span>
-                        </div>
-                      </div>
-                      <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center">
-                        <Database className="w-6 h-6 text-blue-600" />
-                      </div>
-                    </div>
-                  </div>
+                <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <MetricCard
+                    label="总用户数"
+                    value={statistics.users.total}
+                    detail={`+${statistics.users.today_new} 今日`}
+                    icon={Users}
+                    tone="slate"
+                  />
+                  <MetricCard
+                    label="启用用户"
+                    value={statistics.users.active}
+                    detail={`${statistics.users.inactive} 禁用`}
+                    icon={CheckCircle}
+                    tone="green"
+                  />
+                  <MetricCard
+                    label="今日活跃"
+                    value={statistics.users.today_active}
+                    detail={`${statistics.users.recent_active_7days} 近 7 日`}
+                    icon={Activity}
+                    tone="blue"
+                  />
+                  <MetricCard
+                    label="总会话数"
+                    value={statistics.sessions.total}
+                    detail={`${statistics.sessions.today} 今日`}
+                    icon={Database}
+                    tone="blue"
+                  />
                 </div>
 
-                {/* 第二行：处理统计 - 统一使用白色背景，更专业 */}
                 {statistics.processing && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    {/* Total Characters Processed */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center">
-                          <BarChart3 className="w-5 h-5 text-blue-600" />
-                        </div>
-                        <span className="text-xs font-medium text-gray-400">累计</span>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">处理字符数</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.processing.total_chars_processed.toLocaleString()}
-                      </p>
-                    </div>
-
-                    {/* Average Processing Time */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-orange-50 rounded-lg flex items-center justify-center">
-                          <Clock className="w-5 h-5 text-orange-600" />
-                        </div>
-                        <span className="text-xs font-medium text-gray-400">平均</span>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">处理耗时</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {Math.round(statistics.processing.avg_processing_time)}
-                        <span className="text-sm font-normal text-gray-500 ml-1">秒</span>
-                      </p>
-                    </div>
-
-                    {/* Paper Polish Count */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-teal-50 rounded-lg flex items-center justify-center">
-                          <FileText className="w-5 h-5 text-teal-600" />
-                        </div>
-                        <span className="text-xs font-medium text-gray-400">计数</span>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">论文润色</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.processing.paper_polish_count}
-                      </p>
-                    </div>
-
-                    {/* Paper Polish Enhance Count */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-rose-50 rounded-lg flex items-center justify-center">
-                          <TrendingUp className="w-5 h-5 text-rose-600" />
-                        </div>
-                        <span className="text-xs font-medium text-gray-400">计数</span>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">润色 + 增强</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.processing.paper_polish_enhance_count}
-                      </p>
-                    </div>
+                  <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                    <MetricCard
+                      label="处理字符数"
+                      value={statistics.processing.total_chars_processed.toLocaleString()}
+                      detail="累计"
+                      icon={BarChart3}
+                      tone="blue"
+                    />
+                    <MetricCard
+                      label="平均处理耗时"
+                      value={Math.round(statistics.processing.avg_processing_time)}
+                      suffix="秒"
+                      detail="平均"
+                      icon={Clock}
+                      tone="amber"
+                    />
+                    <MetricCard
+                      label="论文润色"
+                      value={statistics.processing.paper_polish_count}
+                      detail="任务数"
+                      icon={FileText}
+                      tone="teal"
+                    />
+                    <MetricCard
+                      label="润色 + 增强"
+                      value={statistics.processing.paper_polish_enhance_count}
+                      detail="任务数"
+                      icon={TrendingUp}
+                      tone="rose"
+                    />
                   </div>
                 )}
 
-                {/* 第三行：Word Formatter 统计 */}
                 {statistics.word_formatter && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
-                    {/* Total Word Formatter Jobs */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
-                          <FileText className="w-5 h-5 text-blue-600" />
-                        </div>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">排版任务</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.word_formatter.total}
-                      </p>
-                    </div>
-
-                    {/* Completed */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center">
-                          <CheckCircle className="w-5 h-5 text-green-600" />
-                        </div>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">已完成</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.word_formatter.completed}
-                      </p>
-                    </div>
-
-                    {/* Running */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
-                          <Loader2 className="w-5 h-5 text-blue-600" />
-                        </div>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">运行中</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.word_formatter.running}
-                      </p>
-                    </div>
-
-                    {/* Pending */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-yellow-50 rounded-xl flex items-center justify-center">
-                          <Clock className="w-5 h-5 text-yellow-600" />
-                        </div>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">等待中</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.word_formatter.pending}
-                      </p>
-                    </div>
-
-                    {/* Failed */}
-                    <div className="bg-white rounded-2xl shadow-ios p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="w-10 h-10 bg-red-50 rounded-xl flex items-center justify-center">
-                          <XCircle className="w-5 h-5 text-red-600" />
-                        </div>
-                      </div>
-                      <p className="text-sm font-medium text-gray-500 mb-1">失败</p>
-                      <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                        {statistics.word_formatter.failed}
-                      </p>
-                    </div>
+                  <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+                    <MetricCard label="排版任务" value={statistics.word_formatter.total} icon={FileText} tone="slate" />
+                    <MetricCard label="已完成" value={statistics.word_formatter.completed} icon={CheckCircle} tone="green" />
+                    <MetricCard label="运行中" value={statistics.word_formatter.running} icon={Loader2} tone="blue" />
+                    <MetricCard label="等待中" value={statistics.word_formatter.pending} icon={Clock} tone="amber" />
+                    <MetricCard label="失败" value={statistics.word_formatter.failed} icon={XCircle} tone="rose" />
                   </div>
                 )}
               </>
             )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)] xl:items-start">
               {/* Card Key Generation */}
-              <div className="lg:col-span-1">
-                <div className="bg-white rounded-2xl shadow-ios p-6">
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center">
-                      <Key className="w-5 h-5 text-blue-600" />
+              <div>
+                <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="mb-5 flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-md bg-blue-50">
+                      <Key className="h-4 w-4 text-blue-600" />
                     </div>
-                    <h2 className="text-lg font-bold text-gray-900">生成卡密</h2>
+                    <div>
+                      <h2 className="text-base font-semibold text-slate-950">生成卡密</h2>
+                      <p className="text-xs text-slate-500">创建单个或批量访问凭证</p>
+                    </div>
                   </div>
 
-                  <form onSubmit={handleGenerateCardKey} className="space-y-4">
+                  <form onSubmit={handleGenerateCardKey} className="space-y-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-500 mb-2">
+                      <label className="mb-1.5 block text-xs font-medium text-slate-600">
                         卡密内容
                       </label>
                       <input
                         type="text"
                         value={newCardKey}
                         onChange={(e) => setNewCardKey(e.target.value)}
-                        className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none transition-colors placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                         placeholder="输入自定义卡密"
                       />
                     </div>
 
                     <button
                       type="submit"
-                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-xl transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm shadow-sm"
+                      className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-blue-600 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                     >
                       <Plus className="w-4 h-4" />
                       生成卡密
                     </button>
-                    
+
                     <button
                       type="button"
                       onClick={() => setShowBatchModal(true)}
-                      className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-semibold py-2.5 rounded-xl transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm"
+                      className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
                     >
                       <Key className="w-4 h-4" />
                       批量生成
@@ -733,15 +636,15 @@ const AdminDashboard = () => {
                   </form>
 
                   {generatedKey && (
-                    <div className="mt-6 p-4 bg-green-50/50 border border-green-100 rounded-xl">
-                      <p className="text-xs font-medium text-green-700 mb-2 uppercase tracking-wide">生成的卡密</p>
+                    <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                      <p className="mb-2 text-xs font-medium text-emerald-700">生成的卡密</p>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 bg-white px-3 py-2 rounded-lg border border-green-200 text-sm font-mono text-green-800">
+                        <code className="min-w-0 flex-1 break-all rounded border border-emerald-200 bg-white px-2.5 py-2 font-mono text-xs text-emerald-800">
                           {generatedKey}
                         </code>
                         <button
                           onClick={() => copyToClipboard(generatedKey)}
-                          className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition-colors shadow-sm"
+                          className="h-9 shrink-0 rounded-md bg-emerald-600 px-3 text-sm font-medium text-white transition-colors hover:bg-emerald-700"
                         >
                           复制
                         </button>
@@ -752,20 +655,23 @@ const AdminDashboard = () => {
               </div>
 
               {/* Users List */}
-              <div className="lg:col-span-2">
-                <div className="bg-white rounded-2xl shadow-ios overflow-hidden">
-                  <div className="p-6 border-b border-gray-100">
-                    <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="min-w-0">
+                <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+                  <div className="border-b border-slate-200 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center">
-                          <Users className="w-5 h-5 text-gray-600" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-100">
+                          <Users className="h-4 w-4 text-slate-600" />
                         </div>
-                        <h2 className="text-lg font-bold text-gray-900">用户管理</h2>
+                        <div>
+                          <h2 className="text-base font-semibold text-slate-950">用户管理</h2>
+                          <p className="text-xs text-slate-500">共 {users.length} 个访问凭证</p>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="grid grid-cols-2 gap-2 sm:flex">
                         <button
                           onClick={exportUsersToCSV}
-                          className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-lg transition-colors text-sm font-medium"
+                          className="flex h-9 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
                         >
                           <Download className="w-4 h-4" />
                           导出CSV
@@ -773,7 +679,7 @@ const AdminDashboard = () => {
                         <button
                           onClick={() => { fetchUsers(); fetchStatistics(); }}
                           disabled={loadingUsers}
-                          className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg transition-colors text-sm font-medium shadow-sm"
+                          className="flex h-9 items-center justify-center gap-2 rounded-md bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:bg-slate-400"
                         >
                           <RefreshCw className={`w-4 h-4 ${loadingUsers ? 'animate-spin' : ''}`} />
                           刷新
@@ -782,168 +688,298 @@ const AdminDashboard = () => {
                     </div>
                   </div>
 
-                  <div className="overflow-x-auto">
-                    {loadingUsers ? (
-                      <div className="flex items-center justify-center py-12">
-                        <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                  {loadingUsers ? (
+                    <div className="flex items-center justify-center py-12">
+                      <div className="h-7 w-7 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+                    </div>
+                  ) : users.length === 0 ? (
+                    <div className="py-12 text-center text-sm text-slate-500">
+                      暂无用户数据
+                    </div>
+                  ) : (
+                    <>
+                      <div className="hidden lg:block">
+                        <table className="w-full table-fixed">
+                          <colgroup>
+                            <col className="w-[23%]" />
+                            <col className="w-[14%]" />
+                            <col className="w-[18%]" />
+                            <col className="w-[18%]" />
+                            <col className="w-[11%]" />
+                            <col className="w-[16%]" />
+                          </colgroup>
+                          <thead className="border-b border-slate-200 bg-slate-50">
+                            <tr>
+                              {['卡密', '使用次数', '创建时间', '最后使用', '状态', '操作'].map((label) => (
+                                <th key={label} className="px-3 py-2.5 text-left text-xs font-medium text-slate-500">
+                                  {label}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 bg-white">
+                            {users.map((user) => (
+                              <tr key={user.id} className="transition-colors hover:bg-slate-50">
+                                <td className="min-w-0 px-3 py-3">
+                                  <code
+                                    className="block truncate font-mono text-xs text-slate-900"
+                                    title={user.card_key}
+                                  >
+                                    {user.card_key}
+                                  </code>
+                                </td>
+                                <td className="px-3 py-3 text-sm">
+                                  {editingUserId === user.id ? (
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="number"
+                                        value={newUsageLimit}
+                                        onChange={(e) => setNewUsageLimit(e.target.value)}
+                                        className="h-8 w-14 rounded border border-slate-300 px-1 text-center text-sm outline-none focus:border-blue-500"
+                                        min="0"
+                                      />
+                                      <input
+                                        type="number"
+                                        value={newTaskConcurrencyLimit}
+                                        onChange={(e) => setNewTaskConcurrencyLimit(e.target.value)}
+                                        className="h-8 w-12 rounded border border-slate-300 px-1 text-center text-sm outline-none focus:border-blue-500"
+                                        min="1"
+                                        max="100"
+                                        title="任务并发上限"
+                                      />
+                                      <button
+                                        onClick={() => handleUpdateUsageLimit(user.id, newUsageLimit)}
+                                        className="flex h-8 w-8 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50"
+                                        title="保存使用次数"
+                                        aria-label="保存使用次数"
+                                      >
+                                        <CheckCircle className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setEditingUserId(null);
+                                          setNewUsageLimit('');
+                                        }}
+                                        className="flex h-8 w-8 items-center justify-center rounded text-slate-500 hover:bg-slate-100"
+                                        title="取消编辑"
+                                        aria-label="取消编辑"
+                                      >
+                                        <XCircle className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex min-w-0 items-center gap-1">
+                                      <span className={`truncate text-sm font-medium ${
+                                        user.usage_limit > 0 && user.usage_count >= user.usage_limit
+                                          ? 'text-red-600'
+                                          : user.usage_limit === 0
+                                          ? 'text-emerald-600'
+                                          : 'text-slate-700'
+                                      }`}>
+                                        {user.usage_count || 0} / {user.usage_limit === 0 ? '∞' : user.usage_limit}
+                                        <span className="ml-2 text-xs font-normal text-slate-500">
+                                          并发 {user.task_concurrency_limit || 1}
+                                        </span>
+                                      </span>
+                                      <button
+                                        onClick={() => {
+                                          setEditingUserId(user.id);
+                                          setNewUsageLimit(user.usage_limit ?? 1);
+                                          setNewTaskConcurrencyLimit(user.task_concurrency_limit ?? 1);
+                                        }}
+                                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-blue-600 hover:bg-blue-50"
+                                        title="编辑使用次数限制"
+                                        aria-label="编辑使用次数限制"
+                                      >
+                                        <Edit2 className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-3 py-3 text-sm">
+                                  <DateTime value={user.created_at} />
+                                </td>
+                                <td className="px-3 py-3 text-sm">
+                                  <DateTime value={user.last_used} />
+                                </td>
+                                <td className="px-3 py-3">
+                                  {user.is_active ? (
+                                    <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                                      <CheckCircle className="h-3 w-3" />
+                                      启用
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700">
+                                      <XCircle className="h-3 w-3" />
+                                      禁用
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-3">
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => handleViewUserDetails(user.id)}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 text-blue-600 transition-colors hover:bg-blue-50"
+                                      title="查看详情"
+                                      aria-label="查看详情"
+                                    >
+                                      <Eye className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleToggleUserStatus(user.id, user.is_active)}
+                                      className={`flex h-8 w-8 items-center justify-center rounded border transition-colors ${
+                                        user.is_active
+                                          ? 'border-amber-200 text-amber-600 hover:bg-amber-50'
+                                          : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50'
+                                      }`}
+                                      title={user.is_active ? '禁用用户' : '启用用户'}
+                                      aria-label={user.is_active ? '禁用用户' : '启用用户'}
+                                    >
+                                      {user.is_active ? <XCircle className="h-4 w-4" /> : <CheckCircle className="h-4 w-4" />}
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteUser(user.id)}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-red-200 text-red-600 transition-colors hover:bg-red-50"
+                                      title="删除用户"
+                                      aria-label="删除用户"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                    ) : users.length === 0 ? (
-                      <div className="text-center py-12 text-gray-500">
-                        暂无用户数据
-                      </div>
-                    ) : (
-                      <table className="w-full">
-                        <thead className="bg-gray-50 border-b border-gray-200">
-                          <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              卡密
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              使用次数
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              创建时间
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              最后使用
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              状态
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              操作
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                          {users.map((user) => (
-                            <tr key={user.id} className="hover:bg-gray-50">
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <code className="text-sm font-mono text-gray-900">
-                                  {user.card_key}
-                                </code>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm">
+
+                      <div className="divide-y divide-slate-200 lg:hidden">
+                        {users.map((user) => (
+                          <div key={user.id} className="p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <code className="min-w-0 break-all font-mono text-xs text-slate-900">
+                                {user.card_key}
+                              </code>
+                              {user.is_active ? (
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                                  <CheckCircle className="h-3 w-3" />
+                                  启用
+                                </span>
+                              ) : (
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-700">
+                                  <XCircle className="h-3 w-3" />
+                                  禁用
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <p className="mb-1 text-xs text-slate-500">使用次数</p>
                                 {editingUserId === user.id ? (
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex items-center gap-1">
                                     <input
                                       type="number"
                                       value={newUsageLimit}
                                       onChange={(e) => setNewUsageLimit(e.target.value)}
-                                      className="w-20 px-2 py-1 border border-gray-300 rounded text-center"
+                                      className="h-8 w-16 rounded border border-slate-300 px-1 text-center text-sm outline-none focus:border-blue-500"
                                       min="0"
                                     />
                                     <button
                                       onClick={() => handleUpdateUsageLimit(user.id, newUsageLimit)}
-                                      className="text-green-600 hover:text-green-800"
+                                      className="flex h-8 w-8 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50"
+                                      aria-label="保存使用次数"
                                     >
-                                      <CheckCircle className="w-4 h-4" />
+                                      <CheckCircle className="h-4 w-4" />
                                     </button>
                                     <button
                                       onClick={() => {
                                         setEditingUserId(null);
                                         setNewUsageLimit('');
                                       }}
-                                      className="text-red-600 hover:text-red-800"
+                                      className="flex h-8 w-8 items-center justify-center rounded text-slate-500 hover:bg-slate-100"
+                                      aria-label="取消编辑"
                                     >
-                                      <XCircle className="w-4 h-4" />
+                                      <XCircle className="h-4 w-4" />
                                     </button>
                                   </div>
                                 ) : (
-                                  <div className="flex items-center gap-2">
-                                    <span className={`font-medium ${
-                                      user.usage_limit > 0 && user.usage_count >= user.usage_limit 
-                                        ? 'text-red-600' 
-                                        : user.usage_limit === 0
-                                        ? 'text-green-600'
-                                        : 'text-gray-700'
-                                    }`}>
+                                  <div className="flex items-center gap-1">
+                                    <span className="font-medium text-slate-800">
                                       {user.usage_count || 0} / {user.usage_limit === 0 ? '∞' : user.usage_limit}
                                     </span>
                                     <button
                                       onClick={() => {
                                         setEditingUserId(user.id);
                                         setNewUsageLimit(user.usage_limit ?? 1);
+                                        setNewTaskConcurrencyLimit(user.task_concurrency_limit ?? 1);
                                       }}
-                                      className="text-blue-600 hover:text-blue-800"
-                                      title="编辑使用次数限制"
+                                      className="flex h-8 w-8 items-center justify-center rounded text-blue-600 hover:bg-blue-50"
+                                      aria-label="编辑使用次数限制"
                                     >
-                                      <Edit2 className="w-4 h-4" />
+                                      <Edit2 className="h-4 w-4" />
                                     </button>
                                   </div>
                                 )}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {new Date(user.created_at).toLocaleString('zh-CN')}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {user.last_used 
-                                  ? new Date(user.last_used).toLocaleString('zh-CN')
-                                  : '从未使用'}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                {user.is_active ? (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded-full">
-                                    <CheckCircle className="w-3 h-3" />
-                                    启用
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 text-xs font-medium rounded-full">
-                                    <XCircle className="w-3 h-3" />
-                                    禁用
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <button
-                                    onClick={() => handleViewUserDetails(user.id)}
-                                    className="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-800 rounded transition-colors flex items-center gap-1"
-                                  >
-                                    <Eye className="w-4 h-4" />
-                                    详情
-                                  </button>
-                                  <button
-                                    onClick={() => handleToggleUserStatus(user.id, user.is_active)}
-                                    className={`px-3 py-1 rounded transition-colors ${
-                                      user.is_active
-                                        ? 'bg-yellow-100 hover:bg-yellow-200 text-yellow-800'
-                                        : 'bg-green-100 hover:bg-green-200 text-green-800'
-                                    }`}
-                                  >
-                                    {user.is_active ? '禁用' : '启用'}
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteUser(user.id)}
-                                    className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-800 rounded transition-colors flex items-center gap-1"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                    删除
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
+                              </div>
+                              <div>
+                                <p className="mb-1 text-xs text-slate-500">创建时间</p>
+                                <DateTime value={user.created_at} />
+                              </div>
+                              <div className="col-span-2">
+                                <p className="mb-1 text-xs text-slate-500">最后使用</p>
+                                <DateTime value={user.last_used} />
+                              </div>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-3 gap-2">
+                              <button
+                                onClick={() => handleViewUserDetails(user.id)}
+                                className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-slate-200 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                              >
+                                <Eye className="h-4 w-4" />
+                                详情
+                              </button>
+                              <button
+                                onClick={() => handleToggleUserStatus(user.id, user.is_active)}
+                                className={`flex h-9 items-center justify-center gap-1.5 rounded-md border text-xs font-medium ${
+                                  user.is_active
+                                    ? 'border-amber-200 text-amber-600 hover:bg-amber-50'
+                                    : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50'
+                                }`}
+                              >
+                                {user.is_active ? <XCircle className="h-4 w-4" /> : <CheckCircle className="h-4 w-4" />}
+                                {user.is_active ? '禁用' : '启用'}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteUser(user.id)}
+                                className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-red-200 text-xs font-medium text-red-600 hover:bg-red-50"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                删除
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
           </>
         )}
-        
+
         {/* Session Monitor Tab */}
         {activeTab === 'sessions' && (
           <SessionMonitor adminToken={adminToken} />
         )}
-        
+
         {/* Database Manager Tab */}
         {activeTab === 'database' && (
           <DatabaseManager adminToken={adminToken} />
         )}
-        
+
         {/* Config Manager Tab */}
         {activeTab === 'config' && (
           <ConfigManager adminToken={adminToken} />
@@ -955,7 +991,7 @@ const AdminDashboard = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
             <h3 className="text-xl font-bold text-gray-800 mb-4">批量生成卡密</h3>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -970,7 +1006,7 @@ const AdminDashboard = () => {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   卡密前缀（可选）
@@ -1052,7 +1088,7 @@ const AdminDashboard = () => {
                 <div>
                   <span className="text-gray-600">最后使用：</span>
                   <span className="ml-2">
-                    {userDetails.user.last_used 
+                    {userDetails.user.last_used
                       ? new Date(userDetails.user.last_used).toLocaleString('zh-CN')
                       : '从未使用'}
                   </span>
@@ -1097,7 +1133,7 @@ const AdminDashboard = () => {
                         </div>
                       </div>
                       <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        session.status === 'completed' 
+                        session.status === 'completed'
                           ? 'bg-green-100 text-green-800'
                           : 'bg-yellow-100 text-yellow-800'
                       }`}>

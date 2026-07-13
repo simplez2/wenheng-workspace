@@ -3,9 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Download, FileText, GitCompare,
-  CheckCircle, AlertCircle, Shield, Square
+  CheckCircle, AlertCircle, Shield, Square, Play, RotateCw
 } from 'lucide-react';
 import { optimizationAPI } from '../api';
+import { createAuthenticatedEventStream } from '../api/eventStream';
 
 const SessionDetailPage = () => {
   const { sessionId } = useParams();
@@ -16,19 +17,22 @@ const SessionDetailPage = () => {
   const [activeTab, setActiveTab] = useState('result');
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportFormat, setExportFormat] = useState('txt');
+  const [isExporting, setIsExporting] = useState(false);
   const [resultViewMode, setResultViewMode] = useState('enhanced');
+  const [isResuming, setIsResuming] = useState(false);
+  const [streamVersion, setStreamVersion] = useState(0);
 
   useEffect(() => {
     let eventSource = null;
-    
+
     const initializeSession = async () => {
       // 先加载数据
       await loadSessionDetail();
       await loadChanges();
-      
+
       // 数据加载完成后再建立 SSE 连接
       const streamUrl = optimizationAPI.getStreamUrl(sessionId);
-      eventSource = new EventSource(streamUrl);
+      eventSource = createAuthenticatedEventStream(streamUrl);
 
       eventSource.onmessage = (event) => {
         try {
@@ -48,21 +52,34 @@ const SessionDetailPage = () => {
         eventSource.close();
       };
     };
-    
+
     initializeSession();
-    
+
     return () => {
       if (eventSource) {
         eventSource.close();
       }
     };
-  }, [sessionId]);
+  }, [sessionId, streamVersion]);
+
+  useEffect(() => {
+    if (!session || !['queued', 'processing'].includes(session.status)) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      loadSessionDetail();
+      loadChanges();
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [session?.status, sessionId]);
 
   const handleStreamUpdate = (data) => {
     setSegments(prevSegments => {
       const newSegments = [...prevSegments];
       const segmentIndex = data.segment_index;
-      
+
       // 确保段落存在
       if (!newSegments[segmentIndex]) {
         // 如果段落不存在（这不应该发生，除非初始化延迟），可以尝试重新加载或创建一个占位符
@@ -72,14 +89,14 @@ const SessionDetailPage = () => {
       }
 
       const segment = { ...newSegments[segmentIndex] };
-      
+
       // 更新内容
       if (data.stage === 'polish' || data.stage === 'emotion_polish') {
         segment.polished_text = (segment.polished_text || "") + data.content;
       } else if (data.stage === 'enhance') {
         segment.enhanced_text = (segment.enhanced_text || "") + data.content;
       }
-      
+
       // 标记为处理中（如果尚未标记）
       if (segment.status !== 'processing') {
           segment.status = 'processing';
@@ -125,25 +142,43 @@ const SessionDetailPage = () => {
     }
 
     try {
+      setIsExporting(true);
       const response = await optimizationAPI.exportSession(sessionId, {
         session_id: sessionId,
         acknowledge_academic_integrity: true,
         export_format: exportFormat,
       });
 
-      // 下载文件
-      const blob = new Blob([response.data.content], { type: 'text/plain' });
-      const url = window.URL.createObjectURL(blob);
+      const disposition = response.headers['content-disposition'] || '';
+      const utf8Filename = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+      const fallbackFilename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+      const filename = utf8Filename
+        ? decodeURIComponent(utf8Filename)
+        : fallbackFilename || `文衡优化结果.${exportFormat}`;
+      const url = window.URL.createObjectURL(response.data);
       const a = document.createElement('a');
       a.href = url;
-      a.download = response.data.filename;
+      a.download = filename;
+      document.body.appendChild(a);
       a.click();
+      a.remove();
       window.URL.revokeObjectURL(url);
 
       toast.success('导出成功');
       setShowExportModal(false);
     } catch (error) {
-      toast.error('导出失败: ' + error.response?.data?.detail);
+      let detail = '请稍后重试';
+      if (error.response?.data instanceof Blob) {
+        try {
+          const payload = JSON.parse(await error.response.data.text());
+          detail = payload.detail || detail;
+        } catch {
+          detail = '文件生成失败';
+        }
+      }
+      toast.error('导出失败: ' + detail);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -158,6 +193,26 @@ const SessionDetailPage = () => {
       loadSessionDetail(); // 刷新状态
     } catch (error) {
       toast.error('停止任务失败: ' + (error.response?.data?.detail || '未知错误'));
+    }
+  };
+
+  const handleResume = async () => {
+    const actionLabel = session.status === 'stopped' ? '继续处理' : '重新处理';
+    if (!window.confirm(`${actionLabel}尚未完成的段落吗？已完成内容不会重复处理。`)) {
+      return;
+    }
+
+    try {
+      setIsResuming(true);
+      const response = await optimizationAPI.resumeSession(sessionId);
+      setSession((current) => ({ ...current, status: 'queued', error_message: null }));
+      setStreamVersion((current) => current + 1);
+      toast.success(response.data?.message || '任务已重新进入处理队列');
+      await loadSessionDetail();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || `${actionLabel}失败，请稍后再试`);
+    } finally {
+      setIsResuming(false);
     }
   };
 
@@ -208,60 +263,85 @@ const SessionDetailPage = () => {
   return (
     <div className="min-h-screen bg-ios-background">
       {/* 顶部导航 - iOS Glass Style */}
-      <nav className="bg-white/80 backdrop-blur-xl border-b border-ios-separator sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-[52px]">
-            <div className="flex items-center gap-3">
+      <nav className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="flex h-14 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
               <button
                 onClick={() => navigate('/workspace')}
-                className="flex items-center gap-1 text-ios-blue hover:opacity-70 transition-opacity -ml-2 px-2 py-1 rounded-lg"
+                className="-ml-2 flex h-9 items-center gap-1 rounded-md px-2 text-blue-600 transition-colors hover:bg-blue-50"
               >
                 <ArrowLeft className="w-5 h-5" />
-                <span className="text-[17px] font-normal">返回</span>
+                <span className="text-sm font-medium">返回</span>
               </button>
-              
-              <div className="h-6 w-[1px] bg-gray-300 mx-1" />
 
-              <div className="flex items-center gap-2">
-                <h1 className="text-[17px] font-semibold text-black">
+              <div className="mx-1 hidden h-6 w-px bg-slate-200 sm:block" />
+
+              <div className="flex min-w-0 items-center gap-2">
+                <h1 className="truncate text-sm font-semibold text-slate-950 sm:text-base">
                   会话详情
                 </h1>
-                <span className="text-[13px] text-ios-gray font-normal">
+                <span className="hidden text-xs font-normal text-slate-400 sm:inline">
                   {new Date(session.created_at).toLocaleDateString()}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex shrink-0 items-center gap-2">
               {session.status === 'completed' && (
                 <>
                   <div className="hidden sm:flex items-center gap-1.5 text-ios-green bg-green-50 px-2 py-1 rounded-md">
                     <CheckCircle className="w-4 h-4" />
                     <span className="text-[13px] font-medium">已完成</span>
                   </div>
-                  
+
                   <button
-                    onClick={() => setShowExportModal(true)}
-                    className="flex items-center gap-1.5 bg-ios-blue hover:bg-blue-600 text-white font-semibold py-1.5 px-4 rounded-full transition-all active:scale-[0.98] text-[15px]"
+                    onClick={() => {
+                      setExportFormat(session.source_format || 'txt');
+                      setShowExportModal(true);
+                    }}
+                    className="flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
                   >
                     <Download className="w-4 h-4" />
                     导出
                   </button>
                 </>
               )}
-              
+
               {session.status === 'failed' && (
-                <div className="flex items-center gap-1.5 text-ios-red bg-red-50 px-2 py-1 rounded-md">
-                  <AlertCircle className="w-4 h-4" />
-                  <span className="text-[13px] font-medium">处理失败</span>
-                </div>
+                <>
+                  <div className="hidden items-center gap-1.5 rounded-md bg-red-50 px-2 py-1 text-red-600 sm:flex">
+                    <AlertCircle className="h-4 w-4" />
+                    <span className="text-[13px] font-medium">处理失败</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResume}
+                    disabled={isResuming}
+                    className="flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <RotateCw className={`h-4 w-4 ${isResuming ? 'animate-spin' : ''}`} />
+                    {isResuming ? '提交中' : '重新处理'}
+                  </button>
+                </>
               )}
 
               {session.status === 'stopped' && (
-                <div className="flex items-center gap-1.5 text-orange-600 bg-orange-50 px-2 py-1 rounded-md">
-                  <AlertCircle className="w-4 h-4" />
-                  <span className="text-[13px] font-medium">已停止</span>
-                </div>
+                <>
+                  <div className="hidden items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-amber-700 sm:flex">
+                    <AlertCircle className="h-4 w-4" />
+                    <span className="text-[13px] font-medium">已暂停</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResume}
+                    disabled={isResuming}
+                    className="flex h-9 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Play className="h-4 w-4 fill-current" />
+                    {isResuming ? '提交中' : '继续处理'}
+                  </button>
+                </>
               )}
 
               {(session.status === 'processing' || session.status === 'queued') && (
@@ -270,7 +350,7 @@ const SessionDetailPage = () => {
                   className="flex items-center gap-1.5 bg-red-50 hover:bg-red-100 text-red-600 font-semibold py-1.5 px-4 rounded-full transition-all active:scale-[0.98] text-[15px]"
                 >
                   <Square className="w-4 h-4 fill-current" />
-                  停止
+                  暂停
                 </button>
               )}
             </div>
@@ -279,11 +359,11 @@ const SessionDetailPage = () => {
       </nav>
 
       {/* 主内容 */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        
+      <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8 lg:py-6">
+
         {/* iOS Segmented Control */}
-        <div className="flex justify-center mb-6">
-          <div className="bg-gray-200/80 p-1 rounded-xl inline-flex w-full max-w-md">
+        <div className="mb-4 flex justify-center">
+          <div className="inline-flex w-full max-w-md rounded-lg bg-slate-200/80 p-1">
             <button
               onClick={() => setActiveTab('result')}
               className={`flex-1 py-1.5 px-4 rounded-[9px] text-[13px] font-medium transition-all duration-200 ${
@@ -316,8 +396,8 @@ const SessionDetailPage = () => {
         {/* 内容区域 */}
         <div className="space-y-6">
           {activeTab === 'result' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-white rounded-2xl shadow-ios overflow-hidden flex flex-col h-[calc(100vh-180px)]">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div className="flex min-h-[280px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm lg:h-[calc(100vh-156px)]">
                 <div className="p-3 bg-gray-50 border-b border-gray-100 flex justify-between items-center">
                   <div className="flex items-center gap-3">
                     <h3 className="text-[15px] font-semibold text-black ml-2">
@@ -362,20 +442,20 @@ const SessionDetailPage = () => {
                     复制全文
                   </button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-5 bg-white custom-scrollbar">
+                <div className="flex-1 overflow-y-auto bg-white p-4 custom-scrollbar sm:p-5">
                   <pre className="whitespace-pre-wrap font-sans text-[16px] text-black leading-relaxed">
                     {getDisplayText()}
                   </pre>
                 </div>
               </div>
-              
-              <div className="bg-white rounded-2xl shadow-ios overflow-hidden flex flex-col h-[calc(100vh-180px)]">
+
+              <div className="flex min-h-[240px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm lg:h-[calc(100vh-156px)]">
                 <div className="p-3 bg-gray-50 border-b border-gray-100">
                   <h3 className="text-[15px] font-semibold text-gray-500 ml-2">
                     原始文本
                   </h3>
                 </div>
-                <div className="flex-1 overflow-y-auto p-5 bg-gray-50/50 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto bg-slate-50/60 p-4 custom-scrollbar sm:p-5">
                   <pre className="whitespace-pre-wrap font-sans text-[15px] text-gray-500 leading-relaxed">
                     {getOriginalText()}
                   </pre>
@@ -385,11 +465,11 @@ const SessionDetailPage = () => {
           )}
 
           {activeTab === 'compare' && (
-            <div className="bg-white rounded-2xl shadow-ios p-6 min-h-[calc(100vh-180px)]">
-              <h3 className="text-[20px] font-bold text-black mb-6 tracking-tight">
+            <div className="min-h-[320px] rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:min-h-[calc(100vh-156px)]">
+              <h3 className="mb-4 text-lg font-semibold tracking-tight text-slate-950">
                 变更对照记录
               </h3>
-              
+
               {changes.length === 0 ? (
                 <div className="text-center py-12">
                   <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4 text-gray-300">
@@ -402,7 +482,7 @@ const SessionDetailPage = () => {
               ) : (
                 <div className="space-y-6">
                   {changes.map((change, index) => (
-                    <div key={change.id} className="border border-gray-100 rounded-xl p-5 hover:shadow-md transition-shadow">
+                    <div key={change.id} className="rounded-lg border border-slate-200 p-4">
                       <div className="flex items-center gap-2 mb-4">
                         <span className="bg-blue-50 text-ios-blue text-[11px] font-bold px-2 py-1 rounded-md uppercase tracking-wide">
                           段落 {change.segment_index + 1}
@@ -413,8 +493,8 @@ const SessionDetailPage = () => {
                            '增强'}
                         </span>
                       </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                         <div>
                           <h4 className="text-[13px] font-semibold text-ios-gray mb-2 uppercase tracking-wide">
                             修改前
@@ -423,7 +503,7 @@ const SessionDetailPage = () => {
                             {change.before_text}
                           </div>
                         </div>
-                        
+
                         <div>
                           <h4 className="text-[13px] font-semibold text-ios-gray mb-2 uppercase tracking-wide">
                             修改后
@@ -481,9 +561,16 @@ const SessionDetailPage = () => {
                   className="w-full px-3 py-2 bg-gray-100 rounded-lg text-[15px] border-none focus:ring-0"
                 >
                   <option value="txt">文本文件 (.txt)</option>
-                  <option value="docx" disabled>Word文档 (.docx) - 即将支持</option>
-                  <option value="pdf" disabled>PDF文件 (.pdf) - 即将支持</option>
+                  {session?.source_format === 'md' && <option value="md">Markdown 文档 (.md)</option>}
+                  <option value="docx">Word文档 (.docx)</option>
+                  <option value="pdf">PDF文件 (.pdf)</option>
                 </select>
+                {session?.source_format && (
+                  <div className="mt-2 rounded-md bg-blue-50 px-3 py-2 text-left text-xs leading-5 text-blue-700">
+                    原文件：{session.source_filename || `.${session.source_format} 文档`}。
+                    选择原格式可保留原文档结构；DOCX 保留字体、段落、表格和图片，PDF 保留页面与文字块位置。
+                  </div>
+                )}
               </div>
             </div>
 
@@ -496,9 +583,10 @@ const SessionDetailPage = () => {
               </button>
               <button
                 onClick={() => handleExport(true)}
-                className="flex-1 py-3.5 text-[17px] font-semibold text-ios-blue hover:bg-gray-50 active:bg-gray-100 transition-colors"
+                disabled={isExporting}
+                className="flex-1 py-3.5 text-[17px] font-semibold text-ios-blue hover:bg-gray-50 active:bg-gray-100 transition-colors disabled:cursor-wait disabled:text-gray-400"
               >
-                确认导出
+                {isExporting ? '正在生成' : '确认导出'}
               </button>
             </div>
           </div>

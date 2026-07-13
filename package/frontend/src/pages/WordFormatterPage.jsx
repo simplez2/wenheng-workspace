@@ -2,12 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
-  FileText, Upload, Download, History, LogOut, Play,
+  FileText, Upload, Download, History, Play,
   CheckCircle, AlertCircle, Trash2, Info, Settings,
   Loader2, FileUp, X, ArrowLeft, ArrowRight, Sparkles,
   Edit3, Eye, BookOpen, HelpCircle, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { wordFormatterAPI } from '../api';
+import { createAuthenticatedEventStream } from '../api/eventStream';
+import WorkspaceHeader from '../components/WorkspaceHeader';
 
 const WordFormatterPage = () => {
   const navigate = useNavigate();
@@ -39,6 +41,7 @@ const WordFormatterPage = () => {
 
   const fileInputRef = useRef(null);
   const eventSourceRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
 
   // Initialize with passed data
   useEffect(() => {
@@ -64,6 +67,9 @@ const WordFormatterPage = () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
     };
   }, []);
 
@@ -74,6 +80,10 @@ const WordFormatterPage = () => {
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
     };
   }, [activeJob]);
@@ -100,14 +110,19 @@ const WordFormatterPage = () => {
     try {
       setIsLoadingJobs(true);
       const response = await wordFormatterAPI.listJobs(20);
-      setJobs(response.data.jobs || []);
+      const jobList = response.data.jobs || [];
+      setJobs(jobList);
 
-      const processing = response.data.jobs?.find(
+      const processing = jobList.find(
         j => j.status === 'running' || j.status === 'pending'
       );
-      if (processing) {
-        setActiveJob(processing.job_id);
-      }
+      setActiveJob(current => {
+        if (processing) return processing.job_id;
+        if (!current) return null;
+        const currentJob = jobList.find(job => job.job_id === current);
+        if (!currentJob) return current;
+        return ['completed', 'failed', 'cancelled'].includes(currentJob.status) ? null : current;
+      });
     } catch (error) {
       console.error('Load jobs failed:', error);
     } finally {
@@ -125,12 +140,16 @@ const WordFormatterPage = () => {
   };
 
   const startSSE = (jobId) => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
 
     const url = wordFormatterAPI.getStreamUrl(jobId);
-    const es = new EventSource(url);
+    const es = createAuthenticatedEventStream(url);
     eventSourceRef.current = es;
 
     es.onmessage = (event) => {
@@ -155,6 +174,7 @@ const WordFormatterPage = () => {
       try {
         const data = JSON.parse(event.data);
         updateJobProgress(jobId, { status: 'completed', ...data });
+        eventSourceRef.current = null;
         setActiveJob(null);
         toast.success('Word 排版完成!');
         loadJobs();
@@ -169,6 +189,7 @@ const WordFormatterPage = () => {
       try {
         const data = JSON.parse(event.data);
         updateJobProgress(jobId, { status: 'failed', error: data.message });
+        eventSourceRef.current = null;
         setActiveJob(null);
         toast.error(`排版失败: ${data.message}`);
       } catch (e) {
@@ -178,13 +199,26 @@ const WordFormatterPage = () => {
     });
 
     es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) {
-        es.close();
-        return;
-      }
+      if (eventSourceRef.current !== es) return;
+      eventSourceRef.current = null;
       es.close();
-      setTimeout(() => {
-        loadJobs();
+      reconnectTimerRef.current = setTimeout(async () => {
+        reconnectTimerRef.current = null;
+        try {
+          const response = await wordFormatterAPI.getJobStatus(jobId);
+          const job = response.data;
+          updateJobProgress(jobId, job);
+          if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+            setActiveJob(null);
+            await loadJobs();
+            await loadUsage();
+            return;
+          }
+          startSSE(jobId);
+        } catch (error) {
+          console.error('Recover job status failed:', error);
+          await loadJobs();
+        }
       }, 1000);
     };
   };
@@ -195,6 +229,13 @@ const WordFormatterPage = () => {
         j.job_id === jobId ? { ...j, ...data } : j
       )
     );
+  };
+
+  const clearSelectedFile = () => {
+    setFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleSubmit = async () => {
@@ -221,7 +262,7 @@ const WordFormatterPage = () => {
       if (inputMode === 'file') {
         response = await wordFormatterAPI.formatFile(file, {
           spec_name: specToUse,
-          spec_json: specJsonToUse,
+          custom_spec_json: specJsonToUse,
           include_cover: includeCover,
           include_toc: includeToc,
         });
@@ -229,7 +270,7 @@ const WordFormatterPage = () => {
         response = await wordFormatterAPI.formatText({
           text,
           spec_name: specToUse,
-          spec_json: specJsonToUse,
+          custom_spec_json: specJsonToUse,
           include_cover: includeCover,
           include_toc: includeToc,
         });
@@ -238,7 +279,7 @@ const WordFormatterPage = () => {
       setActiveJob(response.data.job_id);
       toast.success('任务已开始');
       setText('');
-      setFile(null);
+      clearSelectedFile();
       loadJobs();
     } catch (error) {
       toast.error('启动失败: ' + (error.response?.data?.detail || error.message));
@@ -249,8 +290,19 @@ const WordFormatterPage = () => {
 
   const handleDownload = async (job) => {
     if (job.status !== 'completed') return;
-    const url = wordFormatterAPI.getDownloadUrl(job.job_id);
-    window.open(url, '_blank');
+    try {
+      const response = await wordFormatterAPI.downloadJob(job.job_id);
+      const objectUrl = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = job.output_filename || 'formatted.docx';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      toast.error('下载失败: ' + (error.response?.data?.detail || error.message));
+    }
   };
 
   const handleDeleteJob = async (event, job) => {
@@ -287,6 +339,9 @@ const WordFormatterPage = () => {
       const droppedFile = e.dataTransfer.files[0];
       if (isValidFile(droppedFile)) {
         setFile(droppedFile);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
         setInputMode('file');
       } else {
         toast.error('仅支持 .docx、.txt、.md 文件');
@@ -310,11 +365,6 @@ const WordFormatterPage = () => {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('cardKey');
-    navigate('/');
-  };
-
   const handleSelectSavedSpec = (spec) => {
     setCustomSpecJson(spec.spec_json);
     setSelectedSpec('_custom_');
@@ -332,59 +382,31 @@ const WordFormatterPage = () => {
 
   return (
     <div className="min-h-screen bg-ios-background">
-      {/* Navigation */}
-      <nav className="bg-white/80 backdrop-blur-xl border-b border-ios-separator sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-[52px]">
-            <div className="flex items-center gap-2">
-              {hasWorkflowData && (
-                <Link
-                  to="/format-checker"
-                  className="flex items-center gap-1 text-gray-600 hover:text-gray-900 mr-2"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  <span className="text-sm">返回格式检测</span>
-                </Link>
-              )}
-              <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-                <FileText className="w-5 h-5 text-white" />
-              </div>
-              <h1 className="text-[17px] font-semibold text-black tracking-tight">
-                AI Word 精确排版
-              </h1>
-            </div>
-
-            <div className="flex items-center gap-4">
-              {usage && (
-                <div className="text-[13px] text-ios-gray">
-                  已使用: <span className="font-medium text-black">{usage.usage_count}</span>
-                  {usage.usage_limit > 0 && ` / ${usage.usage_limit}`}
-                </div>
-              )}
-
-              <Link
-                to="/workspace"
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-[13px] font-medium text-gray-700 transition-colors"
-              >
-                <FileText className="w-4 h-4" />
-                <span className="hidden sm:inline">论文润色</span>
-              </Link>
-
-              <button
-                onClick={handleLogout}
-                className="text-ios-red text-[17px] hover:opacity-70 transition-opacity font-normal"
-              >
-                退出
-              </button>
-            </div>
+      <WorkspaceHeader
+        rightContent={usage && (
+          <div className="hidden text-xs text-slate-500 sm:block">
+            已使用 <span className="font-semibold text-slate-900">{usage.usage_count}</span>
+            {usage.usage_limit > 0 && ` / ${usage.usage_limit}`}
           </div>
-        </div>
-      </nav>
+        )}
+      />
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="mx-auto flex max-w-7xl flex-col px-4 py-4 sm:px-6 lg:px-8 lg:py-6">
+        <div className="order-1 mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold text-slate-950">文档排版</h1>
+            <p className="mt-1 text-sm text-slate-500">上传文档或粘贴内容，按选定规范生成 Word 文件。</p>
+          </div>
+          {hasWorkflowData && (
+            <Link to="/format-checker" className="hidden items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-blue-700 sm:flex">
+              <ArrowLeft className="h-4 w-4" />
+              返回格式检查
+            </Link>
+          )}
+        </div>
         {/* Workflow Indicator */}
         {hasWorkflowData && (
-          <div className="mb-6 flex items-center justify-center gap-2 text-sm text-gray-500">
+          <div className="order-2 mt-5 flex items-center justify-center gap-2 text-sm text-gray-500">
             <span className="px-3 py-1 bg-gray-100 rounded-full">1. 生成规范</span>
             <ArrowRight className="w-4 h-4" />
             <span className="px-3 py-1 bg-gray-100 rounded-full">2. 格式检测</span>
@@ -397,7 +419,7 @@ const WordFormatterPage = () => {
 
         {/* Workflow Data Indicators */}
         {hasWorkflowData && (
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="order-2 mt-4 flex flex-wrap gap-2">
             {preprocessedText && (
               <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg text-sm">
                 <CheckCircle className="w-4 h-4 text-green-600" />
@@ -421,12 +443,12 @@ const WordFormatterPage = () => {
 
         {/* Quick Start Guide - Only show when no workflow data */}
         {!hasWorkflowData && (
-          <div className="mb-6 bg-gradient-to-r from-blue-50 to-blue-50 rounded-2xl p-5 border border-blue-100">
+          <div className="order-3 mt-4 hidden rounded-lg border border-blue-100 bg-blue-50 p-4 lg:block">
             <h3 className="text-[15px] font-semibold text-blue-900 mb-3">推荐工作流程</h3>
-            <div className="flex items-center gap-4 text-sm">
+            <div className="grid grid-cols-3 gap-3 text-sm">
               <Link
                 to="/spec-generator"
-                className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors"
+                className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-2 text-blue-700 transition-colors hover:bg-blue-50"
               >
                 <span className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center text-xs font-bold">1</span>
                 生成排版规范
@@ -434,13 +456,13 @@ const WordFormatterPage = () => {
               </Link>
               <Link
                 to="/format-checker"
-                className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg border border-blue-200 text-blue-700 hover:bg-blue-50 transition-colors"
+                className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-3 py-2 text-blue-700 transition-colors hover:bg-blue-50"
               >
                 <span className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center text-xs font-bold">2</span>
                 格式检测
                 <ArrowRight className="w-4 h-4" />
               </Link>
-              <span className="flex items-center gap-2 px-4 py-2 bg-blue-100 rounded-lg text-blue-700 font-medium">
+              <span className="flex items-center gap-2 rounded-md bg-blue-100 px-3 py-2 font-medium text-blue-700">
                 <span className="w-6 h-6 bg-blue-200 rounded-full flex items-center justify-center text-xs font-bold">3</span>
                 生成 Word
               </span>
@@ -452,7 +474,7 @@ const WordFormatterPage = () => {
         )}
 
         {/* Markdown Format Guide */}
-        <div className="mb-6 bg-white rounded-2xl shadow-ios border border-gray-100 overflow-hidden">
+        <div className="order-4 mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <button
             onClick={() => setShowGuide(!showGuide)}
             className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors"
@@ -624,13 +646,13 @@ Deep Learning; Image Recognition; Convolutional Neural Network
           )}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="order-1 grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* Left - Input Area */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="flex flex-col gap-4 lg:col-span-2">
 
             {/* Info Card */}
-            <div className="bg-white rounded-2xl shadow-ios overflow-hidden">
-              <div className="p-4 flex items-start gap-3 bg-blue-50/50">
+            <div className="order-3 hidden overflow-hidden rounded-lg border border-blue-100 bg-white shadow-sm lg:block">
+              <div className="flex items-start gap-3 bg-blue-50/50 p-4">
                 <Info className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
                 <div className="text-[15px] text-black">
                   <p className="font-semibold mb-1 text-blue-600">AI Word 精确排版</p>
@@ -643,17 +665,17 @@ Deep Learning; Image Recognition; Convolutional Neural Network
             </div>
 
             {/* Main Input Card */}
-            <div className="bg-white rounded-2xl shadow-ios p-5">
-              <div className="h-[40px] flex items-center justify-between mb-4">
-                <h2 className="text-[20px] font-bold text-black tracking-tight pl-1">
+            <div className="order-1 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div className="mb-4 flex min-h-10 items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold tracking-tight text-slate-950">
                   {hasWorkflowData ? '确认并开始排版' : '新建任务'}
                 </h2>
 
                 {/* Input Mode Toggle */}
-                <div className="flex bg-gray-100 rounded-lg p-1">
+                <div className="flex rounded-md bg-slate-100 p-1">
                   <button
                     onClick={() => setInputMode('file')}
-                    className={`px-3 py-1.5 text-[13px] font-medium rounded-md transition-all ${
+                    className={`rounded px-3 py-1.5 text-[13px] font-medium transition-colors ${
                       inputMode === 'file'
                         ? 'bg-white text-black shadow-sm'
                         : 'text-ios-gray hover:text-black'
@@ -664,7 +686,7 @@ Deep Learning; Image Recognition; Convolutional Neural Network
                   </button>
                   <button
                     onClick={() => setInputMode('text')}
-                    className={`px-3 py-1.5 text-[13px] font-medium rounded-md transition-all ${
+                    className={`rounded px-3 py-1.5 text-[13px] font-medium transition-colors ${
                       inputMode === 'text'
                         ? 'bg-white text-black shadow-sm'
                         : 'text-ios-gray hover:text-black'
@@ -683,7 +705,7 @@ Deep Learning; Image Recognition; Convolutional Neural Network
                   onDragLeave={handleDrag}
                   onDragOver={handleDrag}
                   onDrop={handleDrop}
-                  className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all ${
+                  className={`relative rounded-md border-2 border-dashed p-5 text-center transition-all sm:p-8 ${
                     dragActive
                       ? 'border-blue-500 bg-blue-50'
                       : file
@@ -709,7 +731,7 @@ Deep Learning; Image Recognition; Convolutional Neural Network
                         <p className="text-[13px] text-ios-gray">{formatFileSize(file.size)}</p>
                       </div>
                       <button
-                        onClick={() => setFile(null)}
+                        onClick={clearSelectedFile}
                         className="text-ios-red text-[13px] hover:underline"
                       >
                         移除
@@ -725,7 +747,12 @@ Deep Learning; Image Recognition; Convolutional Neural Network
                         <p className="text-[13px] text-ios-gray">或</p>
                       </div>
                       <button
-                        onClick={() => fileInputRef.current?.click()}
+                        onClick={() => {
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = '';
+                            fileInputRef.current.click();
+                          }
+                        }}
                         className="px-4 py-2 bg-blue-500 text-white rounded-lg text-[14px] font-medium hover:bg-blue-600 transition-colors"
                       >
                         浏览文件
@@ -740,12 +767,12 @@ Deep Learning; Image Recognition; Convolutional Neural Network
 
               {/* Text Input Area */}
               {inputMode === 'text' && (
-                <div className="relative">
+                  <div className="relative">
                   <textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     placeholder="在此粘贴文档内容..."
-                    className="w-full h-64 px-4 py-3 bg-gray-50 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 transition-all text-[16px] leading-relaxed text-black placeholder-gray-400 border-none outline-none resize-none"
+                    className="h-56 w-full resize-y rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-base leading-relaxed text-slate-950 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 sm:h-64"
                   />
                   <div className="absolute bottom-3 right-3 text-[12px] text-ios-gray bg-white/80 px-2 py-1 rounded-md backdrop-blur-sm">
                     {text.length} 字符
@@ -841,11 +868,11 @@ Deep Learning; Image Recognition; Convolutional Neural Network
               </div>
 
               {/* Submit Button */}
-              <div className="mt-5 flex justify-end">
+                <div className="mt-5 flex justify-end">
                 <button
                   onClick={handleSubmit}
                   disabled={(inputMode === 'text' && !text.trim()) || (inputMode === 'file' && !file) || activeJob || isSubmitting}
-                  className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-8 rounded-xl transition-all active:scale-[0.98] shadow-sm text-[17px]"
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-6 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
                 >
                   {isSubmitting ? (
                     <>
@@ -864,7 +891,7 @@ Deep Learning; Image Recognition; Convolutional Neural Network
 
             {/* Active Job Progress */}
             {activeJob && jobs.find(j => j.job_id === activeJob) && (
-              <div className="bg-white rounded-2xl shadow-ios p-5 border border-blue-100">
+              <div className="order-2 rounded-lg border border-blue-100 bg-white p-5 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-[17px] font-bold text-black flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
@@ -903,24 +930,24 @@ Deep Learning; Image Recognition; Convolutional Neural Network
           </div>
 
           {/* Right - History */}
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl shadow-ios overflow-hidden flex flex-col h-[calc(100vh-140px)] sticky top-24">
-              <div className="p-5 border-b border-gray-100 bg-white/50 backdrop-blur-sm z-10 h-[72px] flex items-center">
+          <div>
+            <div className="flex max-h-[480px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm lg:sticky lg:top-20 lg:h-[calc(100vh-104px)] lg:max-h-none">
+              <div className="z-10 flex h-14 items-center border-b border-slate-200 bg-white/90 px-4 backdrop-blur-sm">
                 <div className="flex items-center gap-2">
                   <History className="w-5 h-5 text-ios-gray" />
-                  <h2 className="text-[20px] font-bold text-black tracking-tight">
+                  <h2 className="text-base font-semibold tracking-tight text-slate-950">
                     历史记录
                   </h2>
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar h-full">
+              <div className="flex-1 space-y-3 overflow-y-auto p-3 custom-scrollbar">
                 {isLoadingJobs ? (
                   <div className="flex items-center justify-center py-12">
                     <Loader2 className="w-6 h-6 animate-spin text-ios-gray" />
                   </div>
                 ) : jobs.length === 0 ? (
-                  <div className="text-center py-12 space-y-2">
+                  <div className="space-y-2 py-8 text-center lg:py-12">
                     <div className="w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center mx-auto text-gray-300">
                       <History className="w-6 h-6" />
                     </div>

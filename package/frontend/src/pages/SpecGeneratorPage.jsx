@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Sparkles, Save, Download, Trash2, Edit3,
@@ -7,6 +7,7 @@ import {
   Code, Eye, Settings, Copy
 } from 'lucide-react';
 import { wordFormatterAPI } from '../api';
+import WorkspaceHeader from '../components/WorkspaceHeader';
 
 // Preset templates for common document types
 const PRESET_TEMPLATES = [
@@ -310,31 +311,20 @@ const SpecGeneratorPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-100">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-4 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link
-              to="/word-formatter"
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </Link>
-            <div>
-              <h1 className="text-lg font-semibold text-gray-900">AI 排版规范生成器</h1>
-              <p className="text-sm text-gray-500">根据您的要求生成自定义排版规范</p>
-            </div>
+      <WorkspaceHeader
+        rightContent={usage && (
+          <div className="hidden text-xs text-slate-500 sm:block">
+            使用量 <span className="font-semibold text-slate-900">{usage.usage_count}</span>
+            {usage.usage_limit > 0 && ` / ${usage.usage_limit}`}
           </div>
-
-          {usage && (
-            <div className="text-sm text-gray-500">
-              使用量: {usage.usage_count}/{usage.usage_limit > 0 ? usage.usage_limit : '∞'}
-            </div>
-          )}
-        </div>
-      </div>
+        )}
+      />
 
       <div className="max-w-7xl mx-auto p-4">
+        <div className="mb-5">
+          <h1 className="text-xl font-semibold text-slate-950">规范生成</h1>
+          <p className="mt-1 text-sm text-slate-500">根据学校、期刊或机构要求生成可复用的文档排版规范。</p>
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left Panel - Input */}
           <div className="space-y-4">

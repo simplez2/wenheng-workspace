@@ -7,7 +7,8 @@ import ApiConfigGuide from './ApiConfigGuide';
 const ConfigManager = ({ adminToken }) => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  
+  const [configuredKeys, setConfiguredKeys] = useState({});
+
   const [formData, setFormData] = useState({
     POLISH_MODEL: '',
     POLISH_API_KEY: '',
@@ -19,11 +20,13 @@ const ConfigManager = ({ adminToken }) => {
     EMOTION_API_KEY: '',
     EMOTION_BASE_URL: '',
     MAX_CONCURRENT_USERS: '',
+    MAX_CONCURRENT_AI_REQUESTS: '',
     HISTORY_COMPRESSION_THRESHOLD: '',
     COMPRESSION_MODEL: '',
     COMPRESSION_API_KEY: '',
     COMPRESSION_BASE_URL: '',
     DEFAULT_USAGE_LIMIT: '',
+    DEFAULT_TASK_CONCURRENCY_LIMIT: '',
     SEGMENT_SKIP_THRESHOLD: '',
     MAX_UPLOAD_FILE_SIZE_MB: '',
     API_REQUEST_INTERVAL: '',
@@ -41,7 +44,13 @@ const ConfigManager = ({ adminToken }) => {
       const response = await axios.get('/api/admin/config', {
         headers: { Authorization: `Bearer ${adminToken}` }
       });
-      
+      setConfiguredKeys({
+        POLISH_API_KEY: response.data.polish.api_key_configured,
+        ENHANCE_API_KEY: response.data.enhance.api_key_configured,
+        EMOTION_API_KEY: response.data.emotion?.api_key_configured,
+        COMPRESSION_API_KEY: response.data.compression?.api_key_configured,
+      });
+
       // 填充表单,直接使用返回的值
       setFormData({
         POLISH_MODEL: response.data.polish.model || '',
@@ -54,11 +63,13 @@ const ConfigManager = ({ adminToken }) => {
         EMOTION_API_KEY: response.data.emotion?.api_key || '',
         EMOTION_BASE_URL: response.data.emotion?.base_url || '',
         MAX_CONCURRENT_USERS: response.data.system.max_concurrent_users?.toString() || '',
+        MAX_CONCURRENT_AI_REQUESTS: response.data.system.max_concurrent_ai_requests?.toString() || '3',
         HISTORY_COMPRESSION_THRESHOLD: response.data.system.history_compression_threshold?.toString() || '',
         COMPRESSION_MODEL: response.data.compression?.model || '',
         COMPRESSION_API_KEY: response.data.compression?.api_key || '',
         COMPRESSION_BASE_URL: response.data.compression?.base_url || '',
         DEFAULT_USAGE_LIMIT: response.data.system.default_usage_limit?.toString() || '',
+        DEFAULT_TASK_CONCURRENCY_LIMIT: response.data.system.default_task_concurrency_limit?.toString() || '1',
         SEGMENT_SKIP_THRESHOLD: response.data.system.segment_skip_threshold?.toString() || '',
         MAX_UPLOAD_FILE_SIZE_MB: response.data.system.max_upload_file_size_mb?.toString() || '',
         API_REQUEST_INTERVAL: response.data.system.api_request_interval?.toString() || '6',
@@ -150,7 +161,7 @@ const ConfigManager = ({ adminToken }) => {
               type="password"
               value={formData.POLISH_API_KEY}
               onChange={(e) => setFormData({...formData, POLISH_API_KEY: e.target.value})}
-              placeholder="sk-... 或 AIzaSy..."
+              placeholder={configuredKeys.POLISH_API_KEY ? '已配置，留空保持不变' : '输入 API Key'}
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm font-mono"
             />
             <p className="mt-1.5 text-xs text-gray-400">
@@ -213,7 +224,7 @@ const ConfigManager = ({ adminToken }) => {
               type="password"
               value={formData.ENHANCE_API_KEY}
               onChange={(e) => setFormData({...formData, ENHANCE_API_KEY: e.target.value})}
-              placeholder="sk-... 或 AIzaSy..."
+              placeholder={configuredKeys.ENHANCE_API_KEY ? '已配置，留空保持不变' : '输入 API Key'}
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm font-mono"
             />
             <p className="mt-1.5 text-xs text-gray-400">
@@ -276,7 +287,7 @@ const ConfigManager = ({ adminToken }) => {
               type="password"
               value={formData.EMOTION_API_KEY}
               onChange={(e) => setFormData({...formData, EMOTION_API_KEY: e.target.value})}
-              placeholder="sk-... 或 AIzaSy..."
+              placeholder={configuredKeys.EMOTION_API_KEY ? '已配置，留空保持不变' : '输入 API Key'}
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm font-mono"
             />
           </div>
@@ -375,7 +386,7 @@ const ConfigManager = ({ adminToken }) => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <label className="block text-sm font-medium text-gray-500 mb-2">
-              最大并发用户数
+              全局任务并发上限
             </label>
             <input
               type="number"
@@ -385,6 +396,21 @@ const ConfigManager = ({ adminToken }) => {
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
             />
             <p className="mt-1.5 text-xs text-gray-400">同时处理任务的最大数量</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-2">
+              AI API 请求并发上限
+            </label>
+            <input
+              type="number"
+              value={formData.MAX_CONCURRENT_AI_REQUESTS}
+              onChange={(e) => setFormData({...formData, MAX_CONCURRENT_AI_REQUESTS: e.target.value})}
+              placeholder="3"
+              min="1"
+              className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+            />
+            <p className="mt-1.5 text-xs text-gray-400">限制所有任务同时请求上游模型的数量</p>
           </div>
 
           <div>
@@ -423,7 +449,7 @@ const ConfigManager = ({ adminToken }) => {
               type="password"
               value={formData.COMPRESSION_API_KEY}
               onChange={(e) => setFormData({...formData, COMPRESSION_API_KEY: e.target.value})}
-              placeholder="sk-... 或 AIzaSy..."
+              placeholder={configuredKeys.COMPRESSION_API_KEY ? '已配置，留空保持不变' : '输入 API Key'}
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm font-mono"
             />
             <p className="mt-1.5 text-xs text-gray-400">可与其他模型使用相同的 Key</p>
@@ -469,6 +495,22 @@ const ConfigManager = ({ adminToken }) => {
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
             />
             <p className="mt-1.5 text-xs text-gray-400">小于此字数的段落将被识别为标题并跳过</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-2">
+              新用户默认任务并发
+            </label>
+            <input
+              type="number"
+              value={formData.DEFAULT_TASK_CONCURRENCY_LIMIT}
+              onChange={(e) => setFormData({...formData, DEFAULT_TASK_CONCURRENCY_LIMIT: e.target.value})}
+              placeholder="1"
+              min="1"
+              max="100"
+              className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+            />
+            <p className="mt-1.5 text-xs text-gray-400">仅影响之后创建的账号，现有账号在用户管理中单独调整</p>
           </div>
 
           <div>

@@ -17,6 +17,9 @@ ENV/
 # Environment
 .env
 .env.local
+app.env
+data/
+redis-data/
 
 # IDE
 .vscode/

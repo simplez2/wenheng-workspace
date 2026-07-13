@@ -3,6 +3,8 @@ import json
 import re
 from openai import AsyncOpenAI, PermissionDeniedError, AuthenticationError, RateLimitError
 from app.config import settings
+from app.security import validate_ai_base_url
+from app.services.concurrency import ai_request_limiter
 
 
 # 不可重试的错误类型 - 这些错误不应该通过降级重试来解决
@@ -75,37 +77,37 @@ THINKING_TAG_BUFFER_SIZE = 20
 
 def remove_thinking_tags(text: str) -> str:
     """移除 AI 模型输出的思考标签
-    
+
     某些 AI 模型（如 DeepSeek、o1）会在输出中包含思考过程标签，
     这些标签需要被过滤掉，避免显示在前端。
-    
+
     Args:
         text: 原始文本
-        
+
     Returns:
         移除思考标签后的文本
     """
     if not text:
         return text
-    
+
     # 移除 <think>...</think> 和 <thinking>...</thinking> 标签及其内容
     # 使用 DOTALL 标志使 . 匹配换行符
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
+
     # 移除可能残留的单独标签
     text = re.sub(r'</?think>', '', text, flags=re.IGNORECASE)
     text = re.sub(r'</?thinking>', '', text, flags=re.IGNORECASE)
-    
+
     # 清理可能产生的多余空白
     text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-    
+
     return text.strip()
 
 
 class AIService:
     """AI 服务类"""
-    
+
     def __init__(
         self,
         model: str,
@@ -114,18 +116,18 @@ class AIService:
     ):
         self.model = model
         self.api_key = api_key or settings.OPENAI_API_KEY
-        
+
         # 修复 base_url 处理：只移除末尾的单个斜杠，保留路径部分
         # 例如: "http://api.com/v1/" -> "http://api.com/v1"
         raw_base_url = base_url or settings.OPENAI_BASE_URL
-        self.base_url = raw_base_url.rstrip("/") if raw_base_url else None
-        
+        self.base_url = validate_ai_base_url(raw_base_url) if raw_base_url else None
+
         # 验证必需的配置
         if not self.api_key:
             raise Exception("API Key 未配置，无法初始化 AI 服务")
         if not self.base_url:
             raise Exception("Base URL 未配置，无法初始化 AI 服务")
-        
+
         try:
             # 初始化 OpenAI 客户端
             self.client = AsyncOpenAI(
@@ -137,15 +139,19 @@ class AIService:
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
             )
-            
-            # 启用所有API请求的日志记录
-            self._enable_logging = True
+
+            # 生产环境默认不记录用户文本与模型输出，避免敏感内容进入容器日志。
+            self._enable_logging = settings.AI_REQUEST_LOGGING
             print(f"[INFO] AI Service 初始化成功: model={model}, base_url={self.base_url}")
         except Exception as e:
             error_msg = f"AI Service 初始化失败: {str(e)}"
             print(f"[ERROR] {error_msg}")
             raise Exception(error_msg)
-    
+
+    async def _create_completion(self, **api_params):
+        async with ai_request_limiter.slot():
+            return await self.client.chat.completions.create(**api_params)
+
     async def stream_complete(
         self,
         messages: List[Dict[str, str]],
@@ -198,7 +204,7 @@ class AIService:
 
             # 尝试调用 API，如果失败则根据错误类型决定是否降级重试
             try:
-                stream = await self.client.chat.completions.create(**api_params)
+                stream = await self._create_completion(**api_params)
             except Exception as api_error:
                 error_category = get_error_category(api_error)
                 can_retry = is_retryable_error(api_error)
@@ -216,7 +222,7 @@ class AIService:
                     # 移除 extra_body（包含 reasoning_effort），添加 temperature
                     api_params.pop("extra_body", None)
                     api_params["temperature"] = temperature
-                    stream = await self.client.chat.completions.create(**api_params)
+                    stream = await self._create_completion(**api_params)
                 else:
                     # 不可重试的错误，直接抛出带有更详细信息的异常
                     if isinstance(api_error, PermissionDeniedError):
@@ -231,16 +237,16 @@ class AIService:
             full_response = ""  # 收集完整响应
             in_thinking_tag = False  # 跟踪是否在思考标签内
             thinking_buffer = ""  # 暂存可能的思考内容
-            
+
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     full_response += content
-                    
+
                     # 检测和过滤思考标签
                     # 将内容添加到缓冲区以检测标签
                     thinking_buffer += content
-                    
+
                     # 检查是否进入思考标签
                     if not in_thinking_tag and ('<think>' in thinking_buffer.lower() or '<thinking>' in thinking_buffer.lower()):
                         in_thinking_tag = True
@@ -250,14 +256,14 @@ class AIService:
                             yield before_tag
                         thinking_buffer = ""
                         continue
-                    
+
                     # 检查是否退出思考标签
                     if in_thinking_tag and ('</think>' in thinking_buffer.lower() or '</thinking>' in thinking_buffer.lower()):
                         in_thinking_tag = False
                         # 清空缓冲区，跳过标签后的内容
                         thinking_buffer = re.split(r'</think>|</thinking>', thinking_buffer, flags=re.IGNORECASE)[-1]
                         continue
-                    
+
                     # 如果不在思考标签内，输出内容
                     if not in_thinking_tag:
                         # 保留最后几个字符在缓冲区以检测跨块的标签
@@ -268,11 +274,11 @@ class AIService:
                     else:
                         # 在思考标签内，不输出
                         thinking_buffer = ""
-            
+
             # 输出剩余缓冲区内容（如果不在思考标签内）
             if thinking_buffer and not in_thinking_tag:
                 yield thinking_buffer
-            
+
             # 流式响应完成后，记录完整响应（包含思考标签）
             if self._enable_logging:
                 print("\n" + "="*80, flush=True)
@@ -348,7 +354,7 @@ class AIService:
 
             # 尝试调用 API，如果失败则根据错误类型决定是否降级重试
             try:
-                response = await self.client.chat.completions.create(**api_params)
+                response = await self._create_completion(**api_params)
             except Exception as api_error:
                 error_category = get_error_category(api_error)
                 can_retry = is_retryable_error(api_error)
@@ -366,7 +372,7 @@ class AIService:
                     # 移除 extra_body（包含 reasoning_effort），添加 temperature
                     api_params.pop("extra_body", None)
                     api_params["temperature"] = temperature
-                    response = await self.client.chat.completions.create(**api_params)
+                    response = await self._create_completion(**api_params)
                 else:
                     # 不可重试的错误，直接抛出带有更详细信息的异常
                     if isinstance(api_error, PermissionDeniedError):
@@ -380,7 +386,7 @@ class AIService:
 
             # 获取原始响应内容
             raw_content = response.choices[0].message.content or ""
-            
+
             # 移除思考标签
             filtered_content = remove_thinking_tags(raw_content)
 
@@ -414,7 +420,7 @@ class AIService:
                 print(f"[AI ERROR] Traceback:\n{traceback.format_exc()}", flush=True)
                 print("="*80 + "\n", flush=True)
             raise Exception(f"AI调用失败: {str(e)}")
-    
+
     async def polish_text(
         self,
         text: str,
@@ -442,7 +448,7 @@ class AIService:
         if stream:
             return self.stream_complete(messages, reasoning_effort=reasoning_effort)
         return await self.complete(messages, reasoning_effort=reasoning_effort)
-    
+
     async def enhance_text(
         self,
         text: str,
@@ -470,7 +476,7 @@ class AIService:
         if stream:
             return self.stream_complete(messages, reasoning_effort=reasoning_effort)
         return await self.complete(messages, reasoning_effort=reasoning_effort)
-    
+
     async def polish_emotion_text(
         self,
         text: str,
@@ -498,35 +504,35 @@ class AIService:
         if stream:
             return self.stream_complete(messages, reasoning_effort=reasoning_effort)
         return await self.complete(messages, reasoning_effort=reasoning_effort)
-    
+
     async def compress_history(
         self,
         history: List[Dict[str, str]],
         compression_prompt: str
     ) -> str:
         """压缩历史会话
-        
+
         只压缩AI的回复内容（assistant消息），不包含用户的原始输入。
         这样可以提取AI处理后的风格和特征，用于后续段落的参考。
         """
         # 只提取assistant消息的内容进行压缩
         assistant_contents = [
-            msg['content'] 
-            for msg in history 
+            msg['content']
+            for msg in history
             if msg.get('role') == 'assistant' and msg.get('content')
         ]
-        
+
         # 如果有system消息（已压缩的内容），也包含进来
         system_contents = [
             msg['content']
             for msg in history
             if msg.get('role') == 'system' and msg.get('content')
         ]
-        
+
         # 合并所有内容
         all_contents = system_contents + assistant_contents
         history_text = "\n\n---段落分隔---\n\n".join(all_contents)
-        
+
         messages = [
             {
                 "role": "system",
@@ -537,7 +543,7 @@ class AIService:
                 "content": f"请压缩以下AI处理后的文本内容,提取关键风格特征:\n\n{history_text}"
             }
         ]
-        
+
         return await self.complete(messages, temperature=0.3)
 
 
@@ -549,18 +555,18 @@ def count_chinese_characters(text: str) -> int:
 
 def count_text_length(text: str) -> int:
     """统计文本长度（适用于中英文）
-    
+
     对于中文文本，统计汉字数量
     对于英文文本，统计字母数量
     对于混合文本，优先统计汉字数量
     """
     chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
     chinese_count = len(chinese_pattern.findall(text))
-    
+
     # 如果有汉字，返回汉字数量（中文文本或中英混合）
     if chinese_count > 0:
         return chinese_count
-    
+
     # 纯英文文本，统计字母数量
     english_pattern = re.compile(r'[a-zA-Z]')
     return len(english_pattern.findall(text))
@@ -568,18 +574,18 @@ def count_text_length(text: str) -> int:
 
 def split_text_into_segments(text: str, max_chars: int = 500) -> List[str]:
     """将文本分割为段落
-    
+
     按照段落分割,如果单个段落过长则进一步分割
     """
     # 首先按段落分割
     paragraphs = text.split('\n')
     segments = []
-    
+
     for para in paragraphs:
         para = para.strip()
         if not para:
             continue
-        
+
         # 如果段落不超过最大字符数,直接添加
         if count_text_length(para) <= max_chars:
             segments.append(para)
@@ -587,22 +593,22 @@ def split_text_into_segments(text: str, max_chars: int = 500) -> List[str]:
             # 段落过长,按句子分割
             sentences = re.split(r'([。!?;])', para)
             current_segment = ""
-            
+
             for i in range(0, len(sentences), 2):
                 sentence = sentences[i]
                 if i + 1 < len(sentences):
                     sentence += sentences[i + 1]  # 加上标点
-                
+
                 if count_text_length(current_segment + sentence) <= max_chars:
                     current_segment += sentence
                 else:
                     if current_segment:
                         segments.append(current_segment)
                     current_segment = sentence
-            
+
             if current_segment:
                 segments.append(current_segment)
-    
+
     return segments
 
 
@@ -684,7 +690,7 @@ def get_default_polish_prompt() -> str:
 3.  **自我审查**: 输出前，**强制自我检查**，确保成品100%符合所选策略的每一条规则，要确保句子流程自然合理，不要出现语病或表达冗余。
 4.  **最终输出**: 输出最终文章。
 
-## 绝对通用规则 
+## 绝对通用规则
 
 1.  **技术内容保护:** 绝对禁止修改任何技术术语、专有名词、代码片段、库名、配置项或API路径 (例如: Django, RESTful API, Ceph, RGW, views.py, .folder_marker, Boto3, /accounts/api/token/refresh/ 等必须保持原样)。
 2.  **核心逻辑不变:** 修改后的句子必须表达与原文完全相同的技术逻辑、因果关系和功能描述。
