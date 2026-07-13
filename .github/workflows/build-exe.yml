@@ -81,7 +81,7 @@ jobs:
         shell: pwsh
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AI学术写作助手-Windows-${{ steps.version.outputs.version }}
           path: package/AI学术写作助手-Windows-*.zip
@@ -149,7 +149,7 @@ jobs:
           tar -czvf "AI学术写作助手-Linux-${version}.tar.gz" -C dist "AI学术写作助手"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AI学术写作助手-Linux-${{ steps.version.outputs.version }}
           path: package/AI学术写作助手-Linux-*.tar.gz
@@ -217,7 +217,7 @@ jobs:
           tar -czvf "AI学术写作助手-macOS-${version}.tar.gz" -C dist "AI学术写作助手"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AI学术写作助手-macOS-${{ steps.version.outputs.version }}
           path: package/AI学术写作助手-macOS-*.tar.gz
