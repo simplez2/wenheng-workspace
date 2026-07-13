@@ -27,9 +27,10 @@ else:
 # 设置工作目录为应用目录（确保数据库和配置文件在正确位置）
 os.chdir(APP_DIR)
 
-# 设置环境变量指向 exe 同目录的 .env 文件
-ENV_FILE = os.path.join(APP_DIR, '.env')
-DB_FILE = os.path.join(APP_DIR, 'ai_polish.db')
+# 容器使用持久化数据目录；桌面版仍使用 exe/脚本同目录。
+RUNTIME_DIR = os.path.abspath(os.getenv('APP_DATA_DIR', APP_DIR))
+ENV_FILE = os.path.join(RUNTIME_DIR, '.env')
+DB_FILE = os.path.join(RUNTIME_DIR, 'wenheng.db' if RUNTIME_DIR != APP_DIR else 'ai_polish.db')
 
 # 加载环境变量
 if os.path.exists(ENV_FILE):
