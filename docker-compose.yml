@@ -5,24 +5,28 @@ services:
     build:
       context: .
       dockerfile: package/Dockerfile
-    image: wenheng-workspace:latest
+    image: wenheng-workspace:${WENHENG_IMAGE_TAG:-latest}
     container_name: wenheng-workspace
     restart: unless-stopped
-    env_file:
-      - app.env
+    init: true
+    read_only: true
     environment:
       APP_DATA_DIR: /data
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 9800
       DATABASE_URL: sqlite:////data/wenheng.db
       REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS: ""
+      ENVIRONMENT: production
+      ALLOW_PRIVATE_AI_ENDPOINTS: "false"
+      ALLOW_USER_AI_CONFIG: "false"
       AI_REQUEST_LOGGING: "false"
     ports:
       - "127.0.0.1:9800:9800"
     volumes:
       - ./data:/data
-      - ./app.env:/app/.env:ro
+      - ./app.env:/app/bootstrap.env:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m,mode=1777
     depends_on:
       redis:
         condition: service_healthy
@@ -33,21 +37,51 @@ services:
       retries: 3
       start_period: 25s
     mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 1.5
+    pids_limit: 256
+    stop_grace_period: 45s
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
     container_name: wenheng-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    init: true
+    read_only: true
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", "60", "1000", "--dir", "/data"]
     volumes:
       - ./redis-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
     mem_limit: 256m
+    mem_reservation: 32m
+    cpus: 0.25
+    pids_limit: 64
+    stop_grace_period: 20s
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"

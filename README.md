@@ -27,6 +27,19 @@ docker compose up -d --build
 
 服务默认仅监听 `127.0.0.1:9800`，应通过 HTTPS 反向代理公开访问。
 
+`app.env` 仅用于容器首次启动时初始化 `data/.env`。初始化完成后，
+`data/.env` 是运行时配置的唯一来源，管理后台修改的模型和并发参数也会持久化到该文件。
+升级前应备份 `data/`，不要仅备份 `app.env`。
+
+镜像标签可以通过 Compose 项目目录下的 `.env` 固定：
+
+```dotenv
+WENHENG_IMAGE_TAG=2026-07-14-a1b2c3d
+```
+
+应用固定使用一个 Uvicorn worker，因为当前 SQLite 会话和文档任务队列包含进程内状态。
+并发由用户任务限制和全局 AI 请求限制控制，不应通过增加 Web worker 数量扩容。
+
 生产环境必须设置：
 
 ```dotenv
@@ -70,6 +83,8 @@ cd package/frontend && npm audit && npm run build
 
 公开部署前阅读 [SECURITY.md](SECURITY.md)。运行时配置接口不会返回已保存的 API Key，
 配置文件采用白名单和原子写入；自定义 AI 地址默认关闭，并阻断私网和保留地址。
+生产容器使用非 root 用户、只读根文件系统、无 Linux capabilities、受限 PID/内存/CPU、
+临时文件系统和日志轮转。Secret Scanning 与 Push Protection 在 GitHub 仓库中保持启用。
 
 ## 架构与贡献
 
