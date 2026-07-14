@@ -3,6 +3,7 @@ import unittest
 import zipfile
 
 from app.word_formatter.utils.ooxml import DocxPackage
+from app.services.document_roundtrip import parse_docx_document
 
 
 class OoxmlSecurityTests(unittest.TestCase):
@@ -13,6 +14,8 @@ class OoxmlSecurityTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             DocxPackage.from_bytes(buffer.getvalue())
+        with self.assertRaises(ValueError):
+            parse_docx_document(buffer.getvalue())
 
     def test_external_entities_are_not_resolved(self):
         package = DocxPackage(

@@ -7,7 +7,10 @@ import {
   BookOpen,
   CheckCircle2,
   Clock,
+  Download,
+  FileArchive,
   FileText,
+  Files,
   History,
   Layers3,
   Play,
@@ -53,7 +56,7 @@ const PROCESSING_MODES = [
 ];
 
 const SOURCE_FILE_EXTENSIONS = new Set(['docx', 'pdf', 'txt', 'md']);
-const MAX_SOURCE_FILE_SIZE = 25 * 1024 * 1024;
+const MAX_BATCH_FILES = 20;
 
 const getFileExtension = (filename) => filename.split('.').pop()?.toLowerCase() || '';
 
@@ -106,7 +109,13 @@ const SessionItem = memo(({ session, activeSession, onView, onDelete, onRetry })
           </time>
         </div>
 
-        <p className="mt-2.5 line-clamp-2 min-h-[40px] text-sm leading-5 text-slate-700">
+        {session.source_filename && (
+          <p className="mt-2.5 flex items-center gap-1.5 truncate text-sm font-semibold text-slate-800">
+            <FileText className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            <span className="truncate">{session.source_filename}</span>
+          </p>
+        )}
+        <p className={`${session.source_filename ? 'mt-1' : 'mt-2.5'} line-clamp-2 min-h-[40px] text-sm leading-5 text-slate-600`}>
           {session.preview_text || '暂无预览'}
         </p>
 
@@ -159,39 +168,59 @@ SessionItem.displayName = 'SessionItem';
 
 const WorkspacePage = () => {
   const [text, setText] = useState('');
-  const [sourceFile, setSourceFile] = useState(null);
+  const [sourceFiles, setSourceFiles] = useState([]);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [processingMode, setProcessingMode] = useState('paper_polish_enhance');
   const [sessions, setSessions] = useState([]);
   const [queueStatus, setQueueStatus] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [exportingBatchId, setExportingBatchId] = useState(null);
   const [showMobileHistory, setShowMobileHistory] = useState(false);
   const fileInputRef = useRef(null);
   const dragDepthRef = useRef(0);
   const navigate = useNavigate();
 
-  const selectSourceFile = useCallback((file) => {
-    if (!file) return;
+  const selectSourceFiles = useCallback((fileList) => {
+    const incoming = Array.from(fileList || []);
+    if (incoming.length === 0) return;
+    const maxFileSize = (queueStatus?.max_upload_file_size_mb || 20) * 1024 * 1024;
+    const maxBatchFiles = queueStatus?.max_batch_files || MAX_BATCH_FILES;
+    const maxBatchTotalSize = (queueStatus?.max_batch_total_size_mb || 100) * 1024 * 1024;
 
-    if (!SOURCE_FILE_EXTENSIONS.has(getFileExtension(file.name))) {
-      toast.error('仅支持 DOCX、PDF、TXT、MD 文件');
-      return;
+    const valid = [];
+    let invalidCount = 0;
+    incoming.forEach((file) => {
+      if (!SOURCE_FILE_EXTENSIONS.has(getFileExtension(file.name)) || file.size === 0 || file.size > maxFileSize) {
+        invalidCount += 1;
+        return;
+      }
+      valid.push(file);
+    });
+    if (invalidCount > 0) {
+      toast.error(`${invalidCount} 个文件不符合格式、大小或非空要求`);
     }
 
-    if (file.size > MAX_SOURCE_FILE_SIZE) {
-      toast.error('文件不能超过 25 MB');
+    const existingKeys = new Set(sourceFiles.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
+    const merged = [...sourceFiles];
+    valid.forEach((file) => {
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
+      if (!existingKeys.has(key)) {
+        existingKeys.add(key);
+        merged.push(file);
+      }
+    });
+    if (merged.length > maxBatchFiles) {
+      toast.error(`每批最多选择 ${maxBatchFiles} 个文件`);
       return;
     }
-
-    if (file.size === 0) {
-      toast.error('不能导入空文件');
+    if (merged.reduce((sum, file) => sum + file.size, 0) > maxBatchTotalSize) {
+      toast.error(`单批文件总大小不能超过 ${queueStatus?.max_batch_total_size_mb || 100} MB`);
       return;
     }
-
-    setSourceFile(file);
+    setSourceFiles(merged);
     setText('');
-  }, []);
+  }, [sourceFiles, queueStatus]);
 
   const handleFileDragEnter = useCallback((event) => {
     event.preventDefault();
@@ -213,65 +242,30 @@ const WorkspacePage = () => {
     dragDepthRef.current = 0;
     setIsDraggingFile(false);
 
-    const files = event.dataTransfer.files;
-    if (files.length > 1) {
-      toast.error('每次只能导入一个文件');
-      return;
-    }
-    selectSourceFile(files[0]);
-  }, [selectSourceFile]);
+    selectSourceFiles(event.dataTransfer.files);
+  }, [selectSourceFiles]);
 
-  const loadSessions = useCallback(async () => {
+  const loadSessions = useCallback(async (showLoading = true) => {
     try {
-      setIsLoadingSessions(true);
+      if (showLoading) setIsLoadingSessions(true);
       const response = await optimizationAPI.listSessions();
       setSessions(response.data);
 
     } catch (error) {
       console.error('加载会话失败:', error);
     } finally {
-      setIsLoadingSessions(false);
+      if (showLoading) setIsLoadingSessions(false);
     }
   }, []);
 
-  const loadQueueStatus = useCallback(async () => {
+  const loadQueueStatus = useCallback(async (sessionId = null) => {
     try {
-      const response = await optimizationAPI.getQueueStatus();
+      const response = await optimizationAPI.getQueueStatus(sessionId);
       setQueueStatus(response.data);
     } catch (error) {
       console.error('加载队列状态失败:', error);
     }
   }, []);
-
-  const updateSessionProgress = useCallback(async (sessionId) => {
-    try {
-      const response = await optimizationAPI.getSessionProgress(sessionId);
-      const progress = response.data;
-
-      setSessions((previousSessions) => {
-        const target = previousSessions.find((session) => session.session_id === sessionId);
-        if (target && target.progress === progress.progress && target.status === progress.status) {
-          return previousSessions;
-        }
-        return previousSessions.map((session) => (
-          session.session_id === sessionId ? { ...session, ...progress } : session
-        ));
-      });
-
-      if (progress.status === 'completed' || progress.status === 'failed' || progress.status === 'stopped') {
-        loadSessions();
-        loadQueueStatus();
-
-        if (progress.status === 'completed') {
-          toast.success('优化完成');
-        } else {
-          toast.error(`优化失败: ${progress.error_message}`);
-        }
-      }
-    } catch (error) {
-      console.error('更新进度失败:', error);
-    }
-  }, [loadSessions, loadQueueStatus]);
 
   useEffect(() => {
     loadSessions();
@@ -284,20 +278,19 @@ const WorkspacePage = () => {
   }, [loadQueueStatus]);
 
   useEffect(() => {
-    const activeSessionIds = sessions
-      .filter((session) => session.status === 'processing' || session.status === 'queued')
-      .map((session) => session.session_id);
-    if (activeSessionIds.length > 0) {
+    const active = sessions.filter((session) => session.status === 'processing' || session.status === 'queued');
+    if (active.length > 0) {
       const interval = setInterval(() => {
-        activeSessionIds.forEach(updateSessionProgress);
+        loadSessions(false);
+        loadQueueStatus(active.find((session) => session.status === 'queued')?.session_id || null);
       }, 4000);
       return () => clearInterval(interval);
     }
     return undefined;
-  }, [sessions, updateSessionProgress]);
+  }, [sessions, loadSessions, loadQueueStatus]);
 
   const handleStartOptimization = useCallback(async () => {
-    if (!text.trim() && !sourceFile) {
+    if (!text.trim() && sourceFiles.length === 0) {
       toast.error('请输入文本或选择要优化的文件');
       return;
     }
@@ -308,24 +301,36 @@ const WorkspacePage = () => {
 
     try {
       setIsSubmitting(true);
-      const response = sourceFile
-        ? await optimizationAPI.startFileOptimization(sourceFile, processingMode)
+      const response = sourceFiles.length > 0
+        ? await optimizationAPI.startFileBatch(sourceFiles, processingMode)
         : await optimizationAPI.startOptimization({
             original_text: text,
             processing_mode: processingMode,
           });
 
-      toast.success('优化任务已启动');
+      if (sourceFiles.length > 0) {
+        const acceptedCount = response.data?.accepted?.length || 0;
+        const rejectedCount = response.data?.rejected?.length || 0;
+        const queuedCount = response.data?.queued_count || 0;
+        toast.success(`已提交 ${acceptedCount} 个文件${queuedCount ? `，${queuedCount} 个进入排队` : ''}`);
+        if (rejectedCount) {
+          const names = response.data.rejected.slice(0, 3).map((item) => item.filename).join('、');
+          toast.error(`${names}${rejectedCount > 3 ? ` 等 ${rejectedCount} 个文件` : ''}未通过校验`);
+        }
+      } else {
+        toast.success('优化任务已提交');
+      }
       setText('');
-      setSourceFile(null);
+      setSourceFiles([]);
       loadSessions();
       loadQueueStatus();
     } catch (error) {
-      toast.error('启动优化失败: ' + error.response?.data?.detail);
+      const detail = error.response?.data?.detail;
+      toast.error('启动优化失败: ' + (typeof detail === 'string' ? detail : detail?.message || '请稍后重试'));
     } finally {
       setIsSubmitting(false);
     }
-  }, [text, sourceFile, processingMode, isSubmitting, loadSessions, loadQueueStatus]);
+  }, [text, sourceFiles, processingMode, isSubmitting, loadSessions, loadQueueStatus]);
 
   const handleDeleteSession = useCallback(async (session) => {
     const confirmDelete = window.confirm('确认删除该会话及其结果吗?');
@@ -372,12 +377,67 @@ const WorkspacePage = () => {
     }
   }, [loadSessions]);
 
+  const handleBatchExport = useCallback(async (batch) => {
+    if (!batch.sessions.every((session) => session.status === 'completed')) {
+      toast.error('该批次还有未完成任务');
+      return;
+    }
+    if (!window.confirm('确认已审核该批次内容并承担最终文档责任后导出吗？')) {
+      return;
+    }
+    try {
+      setExportingBatchId(batch.id);
+      const response = await optimizationAPI.exportBatch(batch.sessions.map((session) => session.session_id));
+      const disposition = response.headers['content-disposition'] || '';
+      const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+      const filename = encodedName ? decodeURIComponent(encodedName) : `文衡批量优化_${batch.id.slice(0, 8)}.zip`;
+      const url = window.URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('批量文件已导出');
+    } catch (error) {
+      let detail = '批量导出失败';
+      if (error.response?.data instanceof Blob) {
+        try {
+          const payload = JSON.parse(await error.response.data.text());
+          detail = payload.detail || detail;
+        } catch {
+          detail = '批量导出文件生成失败';
+        }
+      }
+      toast.error(detail);
+    } finally {
+      setExportingBatchId(null);
+    }
+  }, []);
+
   const activeSessions = useMemo(() => (
     sessions.filter((session) => session.status === 'processing' || session.status === 'queued')
   ), [sessions]);
-  const activeSession = activeSessions[0]?.session_id || null;
-  const currentActiveSessionData = activeSessions[0] || null;
-  const canSubmit = queueStatus?.can_submit ?? activeSessions.length === 0;
+  const processingSessions = useMemo(() => activeSessions.filter((session) => session.status === 'processing'), [activeSessions]);
+  const queuedSessions = useMemo(() => activeSessions.filter((session) => session.status === 'queued'), [activeSessions]);
+  const activeSession = processingSessions[0]?.session_id || queuedSessions[0]?.session_id || null;
+  const currentActiveSessionData = processingSessions[0] || queuedSessions[0] || null;
+  const canSubmit = queueStatus?.can_submit ?? true;
+
+  const batchGroups = useMemo(() => {
+    const groups = new Map();
+    sessions.forEach((session) => {
+      if (!session.batch_id) return;
+      if (!groups.has(session.batch_id)) {
+        groups.set(session.batch_id, { id: session.batch_id, sessions: [], createdAt: session.created_at });
+      }
+      groups.get(session.batch_id).sessions.push(session);
+    });
+    return Array.from(groups.values())
+      .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+      .slice(0, 5);
+  }, [sessions]);
 
   const selectedMode = useMemo(() => (
     PROCESSING_MODES.find((mode) => mode.id === processingMode) || PROCESSING_MODES[0]
@@ -420,7 +480,7 @@ const WorkspacePage = () => {
             <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
               <span className={`h-2 w-2 rounded-full ${activeSession ? 'bg-amber-500' : 'bg-emerald-500'}`} />
               {activeSessions.length > 0
-                ? `我的任务 ${activeSessions.length}/${queueStatus?.user_task_limit || 1}`
+                ? `处理中 ${processingSessions.length}/${queueStatus?.user_task_limit || 1} · 排队 ${queuedSessions.length}`
                 : '可提交任务'}
             </div>
           </div>
@@ -458,15 +518,15 @@ const WorkspacePage = () => {
           </section>
         )}
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="space-y-4">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0 space-y-4">
             <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
               <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3.5">
                 <h2 className="text-base font-semibold">新建处理任务</h2>
                 <span className="inline-flex shrink-0 items-center gap-1.5 rounded bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
                   <Activity className="h-3.5 w-3.5" />
                   {activeSessions.length > 0
-                    ? `并发 ${activeSessions.length}/${queueStatus?.user_task_limit || 1}`
+                    ? `运行 ${processingSessions.length}/${queueStatus?.user_task_limit || 1} · 排队 ${queuedSessions.length}`
                     : '可提交'}
                 </span>
               </div>
@@ -512,7 +572,7 @@ const WorkspacePage = () => {
                 <div
                   role="button"
                   tabIndex={0}
-                  aria-label={sourceFile ? '更换导入文件' : '导入文档'}
+                  aria-label="添加导入文件"
                   onClick={() => fileInputRef.current?.click()}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -537,78 +597,112 @@ const WorkspacePage = () => {
                   <div className="min-w-0">
                     {isDraggingFile ? (
                       <>
-                        <p className="text-sm font-semibold text-emerald-800">松开即可导入文件</p>
-                        <p className="mt-0.5 text-xs text-emerald-700">每次支持导入一个文档</p>
+                        <p className="text-sm font-semibold text-emerald-800">松开即可加入批量任务</p>
+                        <p className="mt-0.5 text-xs text-emerald-700">支持一次拖入多个文件</p>
                       </>
-                    ) : sourceFile ? (
+                    ) : sourceFiles.length > 0 ? (
                       <>
-                        <p className="truncate text-sm font-semibold text-slate-800">{sourceFile.name}</p>
+                        <p className="text-sm font-semibold text-slate-800">已选择 {sourceFiles.length} 个文件</p>
                         <p className="mt-0.5 text-xs text-slate-500">
-                          {(sourceFile.size / 1024 / 1024).toFixed(2)} MB · 完成后默认按原格式导出
+                          {(sourceFiles.reduce((sum, file) => sum + file.size, 0) / 1024 / 1024).toFixed(2)} MB · 超出并发限制的任务自动排队
                         </p>
                       </>
                     ) : (
                       <>
-                        <p className="text-sm font-semibold text-slate-700">导入文档并保留原格式</p>
-                        <p className="mt-0.5 text-xs text-slate-500">拖放文件到这里，或点击选择 · DOCX、PDF、TXT、MD · 最大 25 MB</p>
+                        <p className="text-sm font-semibold text-slate-700">批量导入并按原格式回写</p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          DOCX、PDF、TXT、MD · 单文件 {queueStatus?.max_upload_file_size_mb || 20} MB · 每批最多 {queueStatus?.max_batch_files || MAX_BATCH_FILES} 个
+                        </p>
                       </>
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    {sourceFile && (
+                    {sourceFiles.length > 0 && (
                       <button
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          setSourceFile(null);
+                          setSourceFiles([]);
                         }}
                         className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:text-rose-600"
-                        title="移除文件"
+                        title="清空文件"
                       >
                         <X className="h-4 w-4" />
                       </button>
                     )}
                     <span className={`inline-flex h-9 items-center gap-2 rounded-md border bg-white px-3 text-sm font-semibold ${isDraggingFile ? 'border-emerald-300 text-emerald-700' : 'border-slate-300 text-slate-700'}`}>
                       <Upload className="h-4 w-4" />
-                      {isDraggingFile ? '放置文件' : sourceFile ? '更换文件' : '选择文件'}
+                      {isDraggingFile ? '放置文件' : sourceFiles.length ? '继续添加' : '选择文件'}
                     </span>
                     <input
                       ref={fileInputRef}
                       type="file"
+                      multiple
                       accept=".docx,.pdf,.txt,.md,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                       className="sr-only"
                       onChange={(event) => {
-                        selectSourceFile(event.target.files?.[0]);
+                        selectSourceFiles(event.target.files);
                         event.target.value = '';
                       }}
                     />
                   </div>
                 </div>
 
+                {sourceFiles.length > 0 && (
+                  <div className="mt-2 overflow-hidden rounded-md border border-slate-200 bg-white">
+                    <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
+                      <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
+                        <Files className="h-3.5 w-3.5" />
+                        待提交文件
+                      </span>
+                      <span className="text-xs text-slate-400">{sourceFiles.length}/{queueStatus?.max_batch_files || MAX_BATCH_FILES}</span>
+                    </div>
+                    <div className="max-h-44 divide-y divide-slate-100 overflow-y-auto">
+                      {sourceFiles.map((file) => (
+                        <div key={`${file.name}:${file.size}:${file.lastModified}`} className="flex min-h-11 items-center gap-3 px-3 py-2">
+                          <FileText className="h-4 w-4 shrink-0 text-slate-400" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-slate-700">{file.name}</p>
+                            <p className="text-xs text-slate-400">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSourceFiles((current) => current.filter((candidate) => candidate !== file))}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                            title="移除文件"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="mt-3 overflow-hidden rounded-md border border-slate-300 bg-white focus-within:border-emerald-600 focus-within:ring-2 focus-within:ring-emerald-600/10">
                   <textarea
                     value={text}
                     onChange={(event) => {
                       setText(event.target.value);
-                      if (event.target.value) setSourceFile(null);
+                      if (event.target.value) setSourceFiles([]);
                     }}
-                    disabled={Boolean(sourceFile)}
-                    placeholder={sourceFile ? '已选择文档，将从文件中读取文字' : '在此粘贴需要处理的内容...'}
+                    disabled={sourceFiles.length > 0}
+                    placeholder={sourceFiles.length ? '已选择批量文件，将分别读取并处理文字' : '在此粘贴需要处理的内容...'}
                     className="min-h-[220px] w-full resize-y bg-transparent px-4 py-3.5 text-base leading-7 text-slate-900 outline-none placeholder:text-slate-400 sm:min-h-[300px] lg:min-h-[340px]"
                   />
                   <div className="flex flex-col gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex items-center gap-3 text-xs text-slate-500">
-                      <span>{sourceFile ? '文件模式' : `${text.length.toLocaleString()} 字`}</span>
+                      <span>{sourceFiles.length ? `${sourceFiles.length} 个文件任务` : `${text.length.toLocaleString()} 字`}</span>
                       {!canSubmit && (
                         <span className="text-amber-700">
-                          已达到账号并发上限 {queueStatus?.user_task_limit || 1}
+                          使用额度不足或任务队列已满
                         </span>
                       )}
                     </div>
                     <button
                       type="button"
                       onClick={handleStartOptimization}
-                      disabled={(!text.trim() && !sourceFile) || !canSubmit || isSubmitting}
+                      disabled={(!text.trim() && sourceFiles.length === 0) || !canSubmit || isSubmitting}
                       className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:w-auto"
                     >
                       {isSubmitting ? (
@@ -619,7 +713,7 @@ const WorkspacePage = () => {
                       ) : (
                         <>
                           <Play className="h-4 w-4 fill-current" />
-                          开始优化
+                          {sourceFiles.length ? `提交 ${sourceFiles.length} 个任务` : '开始优化'}
                         </>
                       )}
                     </button>
@@ -659,6 +753,66 @@ const WorkspacePage = () => {
                       排队第 {queueStatus.your_position} 位，约 {Math.ceil(queueStatus.estimated_wait_time / 60)} 分钟
                     </span>
                   )}
+                </div>
+              </section>
+            )}
+
+            {batchGroups.length > 0 && (
+              <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+                <div className="flex min-h-14 items-center justify-between border-b border-slate-200 px-4">
+                  <div className="flex items-center gap-2.5">
+                    <FileArchive className="h-4 w-4 text-slate-400" />
+                    <h2 className="text-sm font-semibold text-slate-900">批量任务</h2>
+                  </div>
+                  <span className="text-xs text-slate-400">最近 {batchGroups.length} 批</span>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {batchGroups.map((batch) => {
+                    const completed = batch.sessions.filter((session) => session.status === 'completed').length;
+                    const processing = batch.sessions.filter((session) => session.status === 'processing').length;
+                    const queued = batch.sessions.filter((session) => session.status === 'queued').length;
+                    const failed = batch.sessions.filter((session) => ['failed', 'stopped'].includes(session.status)).length;
+                    const allCompleted = completed === batch.sessions.length;
+                    const progress = batch.sessions.reduce((sum, session) => sum + Number(session.progress || 0), 0) / batch.sessions.length;
+                    return (
+                      <div key={batch.id} className="px-4 py-3.5">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-sm font-semibold text-slate-800">
+                                {batch.sessions[0]?.source_filename || '批量文档'}
+                              </span>
+                              {batch.sessions.length > 1 && (
+                                <span className="shrink-0 text-xs text-slate-400">等 {batch.sessions.length} 个文件</span>
+                              )}
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                              <span className="text-emerald-700">完成 {completed}</span>
+                              <span className="text-sky-700">处理 {processing}</span>
+                              <span className="text-amber-700">排队 {queued}</span>
+                              {failed > 0 && <span className="text-rose-700">异常 {failed}</span>}
+                            </div>
+                            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                              <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleBatchExport(batch)}
+                            disabled={!allCompleted || exportingBatchId === batch.id}
+                            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                          >
+                            {exportingBatchId === batch.id ? (
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Download className="h-4 w-4" />
+                            )}
+                            {allCompleted ? '下载全部' : failed ? '存在异常' : '等待完成'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             )}

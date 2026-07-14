@@ -91,12 +91,21 @@ export const optimizationAPI = {
       timeout: 120000,
     });
   },
+  startFileBatch: (files, processingMode) => {
+    const formData = new FormData();
+    files.forEach((file) => formData.append('files', file));
+    formData.append('processing_mode', processingMode);
+    return api.post('/optimization/start-files', formData, {
+      timeout: 180000,
+    });
+  },
   getQueueStatus: (sessionId = null) =>
     api.get('/optimization/status', {
       params: sessionId ? { session_id: sessionId } : {},
       timeout: 10000, // 10秒超时
     }),
   listSessions: () => api.get('/optimization/sessions', {
+    params: { limit: 100 },
     timeout: 15000, // 15秒超时
   }),
   getSessionDetail: (sessionId) =>
@@ -118,6 +127,14 @@ export const optimizationAPI = {
   exportSession: (sessionId, confirmation) =>
     api.post(`/optimization/sessions/${sessionId}/export`, confirmation, {
       timeout: 30000, // 30秒超时
+      responseType: 'blob',
+    }),
+  exportBatch: (sessionIds) =>
+    api.post('/optimization/batch/export', {
+      session_ids: sessionIds,
+      acknowledge_academic_integrity: true,
+    }, {
+      timeout: 120000,
       responseType: 'blob',
     }),
   deleteSession: (sessionId) =>

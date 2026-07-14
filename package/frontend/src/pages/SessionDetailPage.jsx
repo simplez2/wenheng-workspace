@@ -23,6 +23,12 @@ const SessionDetailPage = () => {
   const [streamVersion, setStreamVersion] = useState(0);
 
   useEffect(() => {
+    if (session?.source_format) {
+      setExportFormat(session.source_format);
+    }
+  }, [session?.source_format]);
+
+  useEffect(() => {
     let eventSource = null;
 
     const initializeSession = async () => {
@@ -558,17 +564,22 @@ const SessionDetailPage = () => {
                 <select
                   value={exportFormat}
                   onChange={(e) => setExportFormat(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-100 rounded-lg text-[15px] border-none focus:ring-0"
+                  disabled={Boolean(session?.source_format)}
+                  className="w-full px-3 py-2 bg-gray-100 rounded-lg text-[15px] border-none focus:ring-0 disabled:text-gray-700"
                 >
-                  <option value="txt">文本文件 (.txt)</option>
-                  {session?.source_format === 'md' && <option value="md">Markdown 文档 (.md)</option>}
-                  <option value="docx">Word文档 (.docx)</option>
-                  <option value="pdf">PDF文件 (.pdf)</option>
+                  {session?.source_format ? (
+                    <option value={session.source_format}>原格式文件 (.{session.source_format})</option>
+                  ) : (
+                    <>
+                      <option value="txt">文本文件 (.txt)</option>
+                      <option value="docx">Word文档 (.docx)</option>
+                      <option value="pdf">PDF文件 (.pdf)</option>
+                    </>
+                  )}
                 </select>
                 {session?.source_format && (
                   <div className="mt-2 rounded-md bg-blue-50 px-3 py-2 text-left text-xs leading-5 text-blue-700">
-                    原文件：{session.source_filename || `.${session.source_format} 文档`}。
-                    选择原格式可保留原文档结构；DOCX 保留字体、段落、表格和图片，PDF 保留页面与文字块位置。
+                    原文件：{session.source_filename || `.${session.source_format} 文档`}。导出只回写润色后的文字，不重新生成文档结构。
                   </div>
                 )}
               </div>

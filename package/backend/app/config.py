@@ -65,10 +65,13 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_AI_REQUESTS: int = 3
     DEFAULT_USAGE_LIMIT: int = 1
     DEFAULT_TASK_CONCURRENCY_LIMIT: int = 1
+    MAX_QUEUED_TASKS_PER_USER: int = 100
     SEGMENT_SKIP_THRESHOLD: int = 15
 
     # Word Formatter 文件上传限制 (MB)，0 表示无限制
     MAX_UPLOAD_FILE_SIZE_MB: int = 20
+    MAX_BATCH_FILES: int = 20
+    MAX_BATCH_TOTAL_SIZE_MB: int = 100
 
     # 会话压缩配置
     HISTORY_COMPRESSION_THRESHOLD: int = 5000  # 汉字数量阈值
@@ -148,4 +151,3 @@ def reload_settings():
                             setattr(settings, key, value)
 
     return settings
-

@@ -80,6 +80,9 @@ class SessionResponse(BaseModel):
     processing_mode: str = 'paper_polish_enhance'
     source_format: Optional[str] = None
     source_filename: Optional[str] = None
+    batch_id: Optional[str] = None
+    batch_index: Optional[int] = None
+    preserve_format: bool = False
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None
@@ -93,6 +96,25 @@ class SessionDetailResponse(SessionResponse):
     segments: List[SegmentResponse] = []
 
 
+class BatchFileError(BaseModel):
+    filename: str
+    detail: str
+
+
+class BatchStartResponse(BaseModel):
+    batch_id: str
+    accepted: List[SessionResponse]
+    rejected: List[BatchFileError] = Field(default_factory=list)
+    total_files: int
+    processing_limit: int
+    queued_count: int
+
+
+class BatchExportConfirmation(BaseModel):
+    session_ids: List[str] = Field(..., min_length=1, max_length=100)
+    acknowledge_academic_integrity: bool
+
+
 class QueueStatusResponse(BaseModel):
     """队列状态响应"""
     current_users: int
@@ -101,8 +123,12 @@ class QueueStatusResponse(BaseModel):
     your_position: Optional[int] = None
     estimated_wait_time: Optional[int] = None  # 秒
     user_active_tasks: int = 0
+    user_queued_tasks: int = 0
     user_task_limit: int = 1
     can_submit: bool = True
+    max_upload_file_size_mb: int = 20
+    max_batch_files: int = 20
+    max_batch_total_size_mb: int = 100
 
 
 class ProgressUpdate(BaseModel):

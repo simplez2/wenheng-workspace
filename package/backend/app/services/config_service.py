@@ -39,8 +39,11 @@ INT_RANGES = {
     "HISTORY_COMPRESSION_THRESHOLD": (100, 10_000_000),
     "DEFAULT_USAGE_LIMIT": (0, 10_000_000),
     "DEFAULT_TASK_CONCURRENCY_LIMIT": (1, 100),
+    "MAX_QUEUED_TASKS_PER_USER": (1, 1000),
     "SEGMENT_SKIP_THRESHOLD": (0, 100_000),
     "MAX_UPLOAD_FILE_SIZE_MB": (1, 500),
+    "MAX_BATCH_FILES": (1, 100),
+    "MAX_BATCH_TOTAL_SIZE_MB": (1, 2000),
     "API_REQUEST_INTERVAL": (0, 3600),
 }
 ALLOWED_KEYS = SECRET_KEYS | URL_KEYS | MODEL_KEYS | BOOL_KEYS | set(INT_RANGES) | {
@@ -73,9 +76,12 @@ def public_runtime_config() -> Dict[str, object]:
             "history_compression_threshold": settings.HISTORY_COMPRESSION_THRESHOLD,
             "default_usage_limit": settings.DEFAULT_USAGE_LIMIT,
             "default_task_concurrency_limit": settings.DEFAULT_TASK_CONCURRENCY_LIMIT,
+            "max_queued_tasks_per_user": settings.MAX_QUEUED_TASKS_PER_USER,
             "segment_skip_threshold": settings.SEGMENT_SKIP_THRESHOLD,
             "use_streaming": settings.USE_STREAMING,
             "max_upload_file_size_mb": settings.MAX_UPLOAD_FILE_SIZE_MB,
+            "max_batch_files": settings.MAX_BATCH_FILES,
+            "max_batch_total_size_mb": settings.MAX_BATCH_TOTAL_SIZE_MB,
             "api_request_interval": settings.API_REQUEST_INTERVAL,
         },
     }

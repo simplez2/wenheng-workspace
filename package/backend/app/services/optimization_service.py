@@ -19,6 +19,16 @@ from app.config import settings
 # 错误信息最大长度，避免数据库字段溢出
 MAX_ERROR_MESSAGE_LENGTH = 500
 
+FORMAT_PRESERVATION_INSTRUCTION = """
+
+【原格式保真要求】
+当前内容来自需要按原格式导出的文件。你只能润色文字本身：
+1. 只返回处理后的纯文本，不要添加解释、Markdown 标记、代码围栏或新的标题编号。
+2. 不要新增或删除段落、列表层级、表格行列、占位符、引用编号和字段标记。
+3. 保持原意、专有名词、数字、单位和标点层级，文字长度尽量接近原文。
+4. 原文没有换行时，输出也不得新增换行。
+""".strip()
+
 
 class OptimizationStoppedError(Exception):
     """Raised when a user pauses an optimization session."""
@@ -82,24 +92,27 @@ class OptimizationService:
     async def start_optimization(self):
         """开始优化流程"""
         try:
-            # 初始化AI服务
-            self._init_ai_services()
-
             # 重置错误状态
             self.session_obj.error_message = None
             self.session_obj.failed_segment_index = None
             self.db.commit()
 
             # 获取并发权限
-            acquired = await concurrency_manager.acquire(self.session_obj.session_id)
+            user_limit = (
+                self.session_obj.user.task_concurrency_limit
+                if self.session_obj.user and self.session_obj.user.task_concurrency_limit
+                else settings.DEFAULT_TASK_CONCURRENCY_LIMIT
+            )
+            acquired = await concurrency_manager.acquire(
+                self.session_obj.session_id,
+                user_id=self.session_obj.user_id,
+                user_limit=user_limit,
+            )
             if not acquired:
-                self.session_obj.status = "queued"
-                self.db.commit()
-
-                # 等待获取权限 - acquire 方法内部已包含等待逻辑
-                acquired = await concurrency_manager.acquire(self.session_obj.session_id)
-                if not acquired:
-                    raise Exception("等待并发权限超时")
+                self.db.refresh(self.session_obj)
+                if self.session_obj.status == "stopped":
+                    raise OptimizationStoppedError("会话已被用户停止")
+                raise Exception("等待并发权限超时")
 
             # 获取并发权限后再次确认状态，避免排队期间的暂停被覆盖。
             self.db.refresh(self.session_obj)
@@ -108,6 +121,9 @@ class OptimizationService:
 
             self.session_obj.status = "processing"
             self.db.commit()
+
+            # Queued tasks should not allocate AI clients until they own a task slot.
+            self._init_ai_services()
 
             # 检查是否已存在段落,避免重复创建
 
@@ -205,6 +221,8 @@ class OptimizationService:
 
         # 获取该阶段的提示词
         prompt = self._get_prompt(stage)
+        if self.session_obj.preserve_format:
+            prompt = f"{prompt.rstrip()}\n\n{FORMAT_PRESERVATION_INSTRUCTION}"
 
         # 获取AI服务
         if stage == "emotion_polish":
@@ -343,6 +361,8 @@ class OptimizationService:
                         return response
 
                 output_text = await self._run_with_retry(idx, stage, execute_call)
+                if self.session_obj.preserve_format:
+                    output_text = self._normalize_format_preserving_output(input_text, output_text)
 
                 if stage in ["polish", "emotion_polish"]:
                     segment.polished_text = output_text
@@ -411,6 +431,19 @@ class OptimizationService:
 
                 # 直接抛出原异常，保留堆栈
                 raise
+
+    @staticmethod
+    def _normalize_format_preserving_output(input_text: str, output_text: str) -> str:
+        normalized = (output_text or "").strip()
+        if not normalized:
+            raise ValueError("AI 返回了空内容")
+        if "\n" not in input_text and "\r" not in input_text:
+            normalized = " ".join(
+                line.strip()
+                for line in normalized.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                if line.strip()
+            )
+        return normalized
 
     async def _run_with_retry(self, segment_index: int, stage: str, task):
         """执行单次任务，不自动重试"""

@@ -1,14 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request, Response, File, Form, UploadFile
 from sqlalchemy.orm import Session, defer
 from sqlalchemy import func, and_, case
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple
 import json
+import io
 import os
-from app.database import get_db
+import secrets
+import zipfile
+from app.database import SessionLocal, get_db
 from app.dependencies import UserCardKey
 from app.models.models import User, OptimizationSession, OptimizationSegment, ChangeLog
 from app.schemas import (
     OptimizationCreate, SessionResponse, SessionDetailResponse,
+    BatchExportConfirmation, BatchFileError, BatchStartResponse,
     QueueStatusResponse, ProgressUpdate, ChangeLogResponse, ExportConfirmation
 )
 from app.services.optimization_service import OptimizationService
@@ -26,6 +30,7 @@ from app.services.document_roundtrip import (
     SUPPORTED_SOURCE_FORMATS,
     build_docx_from_source,
     build_pdf_from_source,
+    build_text_from_source,
     delete_source_document,
     parse_source_document,
     source_document_path,
@@ -34,12 +39,70 @@ from sse_starlette.sse import EventSourceResponse
 
 router = APIRouter(prefix="/optimization", tags=["optimization"])
 
+VALID_PROCESSING_MODES = {
+    "paper_polish",
+    "paper_enhance",
+    "paper_polish_enhance",
+    "emotion_polish",
+}
+
 
 def _count_active_user_tasks(db: Session, user_id: int) -> int:
     return db.query(OptimizationSession).filter(
         OptimizationSession.user_id == user_id,
-        OptimizationSession.status.in_(["queued", "processing"]),
+        OptimizationSession.status == "processing",
     ).count()
+
+
+def _count_queued_user_tasks(db: Session, user_id: int) -> int:
+    return db.query(OptimizationSession).filter(
+        OptimizationSession.user_id == user_id,
+        OptimizationSession.status == "queued",
+    ).count()
+
+
+def _validate_processing_mode(processing_mode: str) -> str:
+    if processing_mode not in VALID_PROCESSING_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"无效的处理模式。支持的模式: {', '.join(sorted(VALID_PROCESSING_MODES))}",
+        )
+    return processing_mode
+
+
+def _initial_stage(processing_mode: str) -> str:
+    if processing_mode == "emotion_polish":
+        return "emotion_polish"
+    if processing_mode == "paper_enhance":
+        return "enhance"
+    return "polish"
+
+
+def _safe_upload_filename(filename: Optional[str]) -> str:
+    normalized = (filename or "document").replace("\\", "/").split("/")[-1]
+    normalized = normalized.replace("\x00", "").strip()
+    return normalized[:255] or "document"
+
+
+def _ensure_usage_capacity(user: User, requested: int):
+    usage_limit = user.usage_limit if user.usage_limit is not None else settings.DEFAULT_USAGE_LIMIT
+    usage_count = user.usage_count or 0
+    if usage_limit > 0 and usage_count + requested > usage_limit:
+        remaining = max(usage_limit - usage_count, 0)
+        raise HTTPException(
+            status_code=403,
+            detail=f"剩余可用次数为 {remaining}，不足以提交 {requested} 个任务",
+        )
+
+
+def _ensure_queue_capacity(db: Session, user: User, requested: int):
+    outstanding = _count_active_user_tasks(db, user.id) + _count_queued_user_tasks(db, user.id)
+    queue_limit = max(settings.MAX_QUEUED_TASKS_PER_USER, 1)
+    if outstanding + requested > queue_limit:
+        raise HTTPException(
+            status_code=429,
+            detail=f"当前账号最多保留 {queue_limit} 个处理中或排队任务，请等待部分任务完成后再提交",
+        )
 
 
 def get_current_user(card_key: str, db: Session = Depends(get_db)) -> User:
@@ -58,17 +121,104 @@ def get_current_user(card_key: str, db: Session = Depends(get_db)) -> User:
     return user
 
 
-async def run_optimization(session_id: int, db: Session):
-    """后台运行优化任务"""
-    session_obj = db.query(OptimizationSession).filter(
-        OptimizationSession.id == session_id
-    ).first()
+def _create_file_session(
+    db: Session,
+    user: User,
+    prepared: Dict[str, Any],
+    processing_mode: str,
+    batch_id: Optional[str] = None,
+    batch_index: Optional[int] = None,
+) -> Tuple[OptimizationSession, str]:
+    session = OptimizationSession(
+        user_id=user.id,
+        session_id=generate_session_id(),
+        original_text=prepared["original_text"],
+        source_format=prepared["source_format"],
+        source_filename=prepared["filename"],
+        source_manifest=json.dumps(prepared["manifest"], ensure_ascii=False),
+        batch_id=batch_id,
+        batch_index=batch_index,
+        preserve_format=True,
+        processing_mode=processing_mode,
+        current_stage=_initial_stage(processing_mode),
+        status="queued",
+        progress=0.0,
+        total_segments=len(prepared["segments"]),
+    )
+    db.add(session)
+    db.flush()
+    for index, segment_text in enumerate(prepared["segments"]):
+        db.add(OptimizationSegment(
+            session_id=session.id,
+            segment_index=index,
+            stage=session.current_stage,
+            original_text=segment_text,
+            status="pending",
+        ))
+    source_path = source_document_path(session.session_id, prepared["source_format"])
+    with open(source_path, "wb") as handle:
+        handle.write(prepared["content"])
+    return session, source_path
 
-    if not session_obj:
-        return
 
-    service = OptimizationService(db, session_obj)
-    await service.start_optimization()
+async def _prepare_uploaded_file(file: UploadFile) -> Dict[str, Any]:
+    filename = _safe_upload_filename(file.filename)
+    source_format = Path(filename).suffix.lower().lstrip(".")
+    if source_format not in SUPPORTED_SOURCE_FORMATS:
+        raise HTTPException(status_code=400, detail="仅支持 .txt、.md、.docx 和 .pdf 文件")
+
+    content = await file.read()
+    max_size_mb = settings.MAX_UPLOAD_FILE_SIZE_MB or 25
+    if len(content) > max_size_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"文件不能超过 {max_size_mb} MB")
+    if not content:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+
+    try:
+        original_text, manifest, segments = await asyncio.to_thread(
+            parse_source_document,
+            content,
+            source_format,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"无法读取文件: {exc}") from exc
+    if not segments:
+        raise HTTPException(status_code=400, detail="文件中没有可处理的文字")
+    return {
+        "filename": filename,
+        "source_format": source_format,
+        "content": content,
+        "original_text": original_text,
+        "manifest": manifest,
+        "segments": segments,
+    }
+
+
+async def run_optimization(session_id: int):
+    """Run one optimization with a task-owned database session."""
+    db = SessionLocal()
+    try:
+        session_obj = db.query(OptimizationSession).filter(
+            OptimizationSession.id == session_id
+        ).first()
+        if not session_obj:
+            return
+        service = OptimizationService(db, session_obj)
+        await service.start_optimization()
+    except Exception as exc:
+        print(f"[ERROR] Optimization task {session_id} failed: {exc}", flush=True)
+    finally:
+        db.close()
+
+
+async def run_batch_optimizations(session_ids: List[int]):
+    results = await asyncio.gather(
+        *(run_optimization(session_id) for session_id in session_ids),
+        return_exceptions=True,
+    )
+    for session_id, result in zip(session_ids, results):
+        if isinstance(result, Exception):
+            print(f"[ERROR] Batch task {session_id} failed: {result}", flush=True)
 
 
 @router.post("/start", response_model=SessionResponse)
@@ -91,36 +241,11 @@ async def start_optimization(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    usage_limit = user.usage_limit if user.usage_limit is not None else settings.DEFAULT_USAGE_LIMIT
     usage_count = user.usage_count or 0
-    # 0 表示无限制
-    if usage_limit > 0 and usage_count >= usage_limit:
-        raise HTTPException(status_code=403, detail="该卡密已达到使用次数限制")
-
-    # 验证处理模式
-    valid_modes = ['paper_polish', 'paper_enhance', 'paper_polish_enhance', 'emotion_polish']
-    if data.processing_mode not in valid_modes:
-        raise HTTPException(
-            status_code=400,
-            detail=f"无效的处理模式。支持的模式: {', '.join(valid_modes)}"
-        )
-
-    # 根据处理模式设置初始阶段
-    if data.processing_mode == 'emotion_polish':
-        initial_stage = 'emotion_polish'
-    elif data.processing_mode == 'paper_enhance':
-        initial_stage = 'enhance'
-    else:
-        initial_stage = 'polish'
-
-    # 创建会话
-    task_limit = user.task_concurrency_limit or settings.DEFAULT_TASK_CONCURRENCY_LIMIT
-    active_tasks = _count_active_user_tasks(db, user.id)
-    if active_tasks >= task_limit:
-        raise HTTPException(
-            status_code=429,
-            detail=f"当前账号最多同时处理 {task_limit} 个任务，请等待已有任务完成或暂停后再提交",
-        )
+    _ensure_usage_capacity(user, 1)
+    _ensure_queue_capacity(db, user, 1)
+    _validate_processing_mode(data.processing_mode)
+    initial_stage = _initial_stage(data.processing_mode)
 
     session_id = generate_session_id()
     session = OptimizationSession(
@@ -148,7 +273,7 @@ async def start_optimization(
     db.refresh(session)
 
     # 添加后台任务
-    background_tasks.add_task(run_optimization, session.id, db)
+    background_tasks.add_task(run_optimization, session.id)
 
     return session
 
@@ -161,48 +286,130 @@ async def start_file_optimization(
     processing_mode: str = Form("paper_polish_enhance"),
     db: Session = Depends(get_db),
 ):
-    filename = Path(file.filename or "document").name
-    source_format = Path(filename).suffix.lower().lstrip(".")
-    if source_format not in SUPPORTED_SOURCE_FORMATS:
-        raise HTTPException(status_code=400, detail="仅支持 .txt、.md、.docx 和 .pdf 文件")
-
-    content = await file.read()
-    max_size_mb = settings.MAX_UPLOAD_FILE_SIZE_MB or 25
-    if len(content) > max_size_mb * 1024 * 1024:
-        raise HTTPException(status_code=413, detail=f"文件不能超过 {max_size_mb} MB")
-    if not content:
-        raise HTTPException(status_code=400, detail="文件内容为空")
-
+    user = get_current_user(card_key, db)
+    _validate_processing_mode(processing_mode)
+    _ensure_usage_capacity(user, 1)
+    _ensure_queue_capacity(db, user, 1)
+    prepared = await _prepare_uploaded_file(file)
+    source_path = None
     try:
-        original_text, manifest, source_segments = parse_source_document(content, source_format)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"无法读取文件: {exc}")
-    if not source_segments:
-        raise HTTPException(status_code=400, detail="文件中没有可处理的文字")
-
-    session = await start_optimization(
-        card_key=card_key,
-        data=OptimizationCreate(original_text=original_text, processing_mode=processing_mode),
-        background_tasks=background_tasks,
-        db=db,
-    )
-    session.source_format = source_format
-    session.source_filename = filename
-    session.source_manifest = json.dumps(manifest, ensure_ascii=False)
-    session.total_segments = len(source_segments)
-    with open(source_document_path(session.session_id, source_format), "wb") as handle:
-        handle.write(content)
-    for index, segment_text in enumerate(source_segments):
-        db.add(OptimizationSegment(
-            session_id=session.id,
-            segment_index=index,
-            stage=session.current_stage,
-            original_text=segment_text,
-            status="pending",
-        ))
-    db.commit()
-    db.refresh(session)
+        session, source_path = _create_file_session(db, user, prepared, processing_mode)
+        user.usage_count = (user.usage_count or 0) + 1
+        db.commit()
+        db.refresh(session)
+    except Exception:
+        db.rollback()
+        if source_path and os.path.exists(source_path):
+            os.unlink(source_path)
+        raise
+    background_tasks.add_task(run_optimization, session.id)
     return session
+
+
+@router.post("/start-files", response_model=BatchStartResponse)
+async def start_file_batch(
+    card_key: UserCardKey,
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    processing_mode: str = Form("paper_polish_enhance"),
+    db: Session = Depends(get_db),
+):
+    user = get_current_user(card_key, db)
+    _validate_processing_mode(processing_mode)
+    max_files = max(settings.MAX_BATCH_FILES, 1)
+    if not files:
+        raise HTTPException(status_code=400, detail="请选择至少一个文件")
+    if len(files) > max_files:
+        raise HTTPException(status_code=413, detail=f"每批最多导入 {max_files} 个文件")
+    _ensure_usage_capacity(user, 1)
+    _ensure_queue_capacity(db, user, 1)
+
+    total_limit = max(settings.MAX_BATCH_TOTAL_SIZE_MB, 1) * 1024 * 1024
+    declared_total = sum(
+        upload.size for upload in files
+        if isinstance(upload.size, int) and upload.size > 0
+        and Path(_safe_upload_filename(upload.filename)).suffix.lower().lstrip(".") in SUPPORTED_SOURCE_FORMATS
+    )
+    if declared_total > total_limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"单批文件总大小不能超过 {settings.MAX_BATCH_TOTAL_SIZE_MB} MB",
+        )
+
+    prepared_files: List[Dict[str, Any]] = []
+    rejected: List[BatchFileError] = []
+    total_size = 0
+    for upload in files:
+        filename = _safe_upload_filename(upload.filename)
+        try:
+            prepared = await _prepare_uploaded_file(upload)
+            total_size += len(prepared["content"])
+            if total_size > total_limit:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"单批文件总大小不能超过 {settings.MAX_BATCH_TOTAL_SIZE_MB} MB",
+                )
+            prepared_files.append(prepared)
+        except HTTPException as exc:
+            if exc.status_code == 413 and total_size > total_limit:
+                raise
+            rejected.append(BatchFileError(filename=filename, detail=str(exc.detail)))
+
+    if not prepared_files:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "没有可提交的文件",
+                "files": [item.model_dump() for item in rejected],
+            },
+        )
+
+    _ensure_usage_capacity(user, len(prepared_files))
+    _ensure_queue_capacity(db, user, len(prepared_files))
+    batch_id = secrets.token_urlsafe(16)
+    sessions: List[OptimizationSession] = []
+    source_paths: List[str] = []
+    try:
+        for batch_index, prepared in enumerate(prepared_files):
+            session, source_path = _create_file_session(
+                db,
+                user,
+                prepared,
+                processing_mode,
+                batch_id=batch_id,
+                batch_index=batch_index,
+            )
+            sessions.append(session)
+            source_paths.append(source_path)
+        user.usage_count = (user.usage_count or 0) + len(sessions)
+        db.commit()
+        for session in sessions:
+            db.refresh(session)
+    except Exception:
+        db.rollback()
+        for source_path in source_paths:
+            if os.path.exists(source_path):
+                os.unlink(source_path)
+        raise
+
+    background_tasks.add_task(run_batch_optimizations, [session.id for session in sessions])
+    task_limit = user.task_concurrency_limit or settings.DEFAULT_TASK_CONCURRENCY_LIMIT
+    available_user_slots = max(task_limit - _count_active_user_tasks(db, user.id), 0)
+    manager_status = await concurrency_manager.get_status()
+    available_global_slots = max(
+        manager_status["max_users"] - manager_status["current_users"],
+        0,
+    )
+    immediate_slots = min(len(sessions), available_user_slots, available_global_slots)
+    queued_count = len(sessions) - immediate_slots
+    return BatchStartResponse(
+        batch_id=batch_id,
+        accepted=sessions,
+        rejected=rejected,
+        total_files=len(files),
+        processing_limit=task_limit,
+        queued_count=queued_count,
+    )
 
 
 @router.get("/status", response_model=QueueStatusResponse)
@@ -217,10 +424,17 @@ async def get_queue_status(
     status = await concurrency_manager.get_status(session_id)
     task_limit = user.task_concurrency_limit or settings.DEFAULT_TASK_CONCURRENCY_LIMIT
     active_tasks = _count_active_user_tasks(db, user.id)
+    queued_tasks = _count_queued_user_tasks(db, user.id)
+    usage_limit = user.usage_limit if user.usage_limit is not None else settings.DEFAULT_USAGE_LIMIT
+    has_usage = usage_limit == 0 or (user.usage_count or 0) < usage_limit
     status.update({
         "user_active_tasks": active_tasks,
+        "user_queued_tasks": queued_tasks,
         "user_task_limit": task_limit,
-        "can_submit": active_tasks < task_limit,
+        "can_submit": has_usage and active_tasks + queued_tasks < max(settings.MAX_QUEUED_TASKS_PER_USER, 1),
+        "max_upload_file_size_mb": settings.MAX_UPLOAD_FILE_SIZE_MB,
+        "max_batch_files": settings.MAX_BATCH_FILES,
+        "max_batch_total_size_mb": settings.MAX_BATCH_TOTAL_SIZE_MB,
     })
     return QueueStatusResponse(**status)
 
@@ -245,10 +459,9 @@ async def list_sessions(
         func.substring(OptimizationSession.original_text, 1, 50).label('preview_text')
     ).options(
         defer(OptimizationSession.original_text),
-        defer(OptimizationSession.error_message)
     ).filter(
         OptimizationSession.user_id == user.id
-    ).order_by(OptimizationSession.created_at.desc()).limit(limit).offset(offset).all()
+    ).order_by(OptimizationSession.created_at.desc(), OptimizationSession.id.desc()).limit(limit).offset(offset).all()
 
     # 构造响应，手动注入 original_char_count 和 preview_text
     sessions = []
@@ -422,6 +635,79 @@ async def get_session_changes(
     return parsed_changes
 
 
+def _build_session_export(
+    session: OptimizationSession,
+    segments: List[OptimizationSegment],
+    export_format: str,
+) -> Tuple[bytes, str, str]:
+    if session.source_format and export_format != session.source_format:
+        raise HTTPException(
+            status_code=400,
+            detail=f"导入文件必须按原格式导出，请选择 .{session.source_format}",
+        )
+
+    optimized_segments = [
+        segment.enhanced_text or segment.polished_text or segment.original_text
+        for segment in segments
+    ]
+    original_segments = [segment.original_text for segment in segments]
+    final_text = "\n\n".join(optimized_segments)
+    source_path = source_document_path(session.session_id, export_format)
+    preserve_source = bool(
+        session.source_format == export_format
+        and session.source_manifest
+        and os.path.exists(source_path)
+    )
+    if session.source_format and not preserve_source:
+        raise HTTPException(status_code=500, detail="原始文件模板缺失，已阻止重新排版导出")
+
+    if export_format in {"txt", "md"}:
+        content = (
+            build_text_from_source(
+                source_path,
+                session.source_manifest,
+                optimized_segments,
+                original_segments,
+            )
+            if preserve_source
+            else final_text.encode("utf-8-sig")
+        )
+        media_type = "text/markdown" if export_format == "md" else "text/plain"
+    elif export_format == "docx":
+        content = (
+            build_docx_from_source(
+                source_path,
+                session.source_manifest,
+                optimized_segments,
+                original_segments,
+            )
+            if preserve_source
+            else build_docx(final_text)
+        )
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif export_format == "pdf":
+        content = (
+            build_pdf_from_source(
+                source_path,
+                session.source_manifest,
+                optimized_segments,
+                original_segments,
+            )
+            if preserve_source
+            else build_pdf(final_text)
+        )
+        media_type = "application/pdf"
+    else:
+        raise HTTPException(status_code=400, detail="不支持的导出格式")
+
+    if session.source_filename:
+        base_name = Path(_safe_upload_filename(session.source_filename)).stem.strip(". ")
+    else:
+        base_name = f"文衡优化结果_{session.session_id[:8]}"
+    base_name = base_name or f"文衡优化结果_{session.session_id[:8]}"
+    return content, media_type, f"{base_name}_优化.{export_format}"
+
+
 @router.post("/sessions/{session_id}/export")
 async def export_session(
     session_id: str,
@@ -454,54 +740,13 @@ async def export_session(
         OptimizationSegment.session_id == session.id
     ).order_by(OptimizationSegment.segment_index).all()
 
-    # 组合最终文本
-    final_text = "\n\n".join([
-        seg.enhanced_text or seg.polished_text or seg.original_text
-        for seg in segments
-    ])
-
     export_format = confirmation.export_format
-    base_name = Path(session.source_filename).stem if session.source_filename else f"文衡优化结果_{session_id[:8]}"
-    filename = f"{base_name}_优化.{export_format}"
     try:
-        optimized_segments = [
-            segment.enhanced_text or segment.polished_text or segment.original_text
-            for segment in segments
-        ]
-        preserve_source = (
-            session.source_format == export_format
-            and session.source_manifest
-            and os.path.exists(source_document_path(session.session_id, export_format))
-        )
-        if export_format in {"txt", "md"}:
-            content = final_text.encode("utf-8-sig")
-            media_type = "text/markdown" if export_format == "md" else "text/plain"
-        elif export_format == "docx":
-            content = (
-                build_docx_from_source(
-                    source_document_path(session.session_id, export_format),
-                    session.source_manifest,
-                    optimized_segments,
-                )
-                if preserve_source
-                else build_docx(final_text)
-            )
-            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        elif export_format == "pdf":
-            content = (
-                build_pdf_from_source(
-                    source_document_path(session.session_id, export_format),
-                    session.source_manifest,
-                    optimized_segments,
-                )
-                if preserve_source
-                else build_pdf(final_text)
-            )
-            media_type = "application/pdf"
-        else:
-            raise HTTPException(status_code=400, detail="不支持的导出格式")
+        content, media_type, filename = _build_session_export(session, segments, export_format)
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"生成 {export_format.upper()} 文件失败: {exc}")
 
@@ -511,6 +756,69 @@ async def export_session(
         headers={
             "Content-Disposition": (
                 f"attachment; filename=wenheng-result.{export_format}; "
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/batch/export")
+async def export_batch(
+    confirmation: BatchExportConfirmation,
+    card_key: UserCardKey,
+    db: Session = Depends(get_db),
+):
+    if not confirmation.acknowledge_academic_integrity:
+        raise HTTPException(status_code=400, detail="必须确认学术诚信承诺")
+    user = get_current_user(card_key, db)
+    rows = db.query(OptimizationSession).filter(
+        OptimizationSession.session_id.in_(confirmation.session_ids),
+        OptimizationSession.user_id == user.id,
+    ).all()
+    by_session_id = {row.session_id: row for row in rows}
+    if len(by_session_id) != len(set(confirmation.session_ids)):
+        raise HTTPException(status_code=404, detail="部分任务不存在或不属于当前用户")
+
+    archive = io.BytesIO()
+    used_names: Dict[str, int] = {}
+    batch_ids = set()
+    try:
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for session_id in confirmation.session_ids:
+                session = by_session_id[session_id]
+                if session.status != "completed":
+                    raise HTTPException(status_code=400, detail=f"{session.source_filename or session_id} 尚未完成")
+                if not session.source_format:
+                    raise HTTPException(status_code=400, detail="批量原格式导出仅支持文件导入任务")
+                segments = db.query(OptimizationSegment).filter(
+                    OptimizationSegment.session_id == session.id
+                ).order_by(OptimizationSegment.segment_index).all()
+                content, _, filename = _build_session_export(session, segments, session.source_format)
+                stem = Path(filename).stem
+                suffix = Path(filename).suffix
+                occurrence = used_names.get(filename, 0)
+                used_names[filename] = occurrence + 1
+                archive_name = filename if occurrence == 0 else f"{stem}_{occurrence + 1}{suffix}"
+                bundle.writestr(archive_name, content)
+                if session.batch_id:
+                    batch_ids.add(session.batch_id)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"生成批量导出文件失败: {exc}") from exc
+
+    archive.seek(0)
+    batch_label = next(iter(batch_ids))[:8] if len(batch_ids) == 1 else datetime.utcnow().strftime("%Y%m%d")
+    filename = f"文衡批量优化_{batch_label}.zip"
+    return Response(
+        content=archive.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=wenheng-batch.zip; "
                 f"filename*=UTF-8''{quote(filename)}"
             ),
             "X-Content-Type-Options": "nosniff",
@@ -564,13 +872,7 @@ async def retry_session(
         raise HTTPException(status_code=400, detail="仅可对失败或已停止的会话执行重试")
 
     was_stopped = session.status == "stopped"
-    task_limit = user.task_concurrency_limit or settings.DEFAULT_TASK_CONCURRENCY_LIMIT
-    active_tasks = _count_active_user_tasks(db, user.id)
-    if active_tasks >= task_limit:
-        raise HTTPException(
-            status_code=429,
-            detail=f"当前账号最多同时处理 {task_limit} 个任务，请等待已有任务完成或暂停后再继续",
-        )
+    _ensure_queue_capacity(db, user, 1)
 
     # 保留历史状态信息，服务启动后会清理该提示。
     old_error = session.error_message or "未知错误"
@@ -582,7 +884,7 @@ async def retry_session(
     )
     db.commit()
 
-    background_tasks.add_task(run_optimization, session.id, db)
+    background_tasks.add_task(run_optimization, session.id)
 
     return {
         "message": "已继续处理未完成段落" if was_stopped else "已重新排队处理未完成段落"
@@ -609,9 +911,11 @@ async def stop_session(
     if session.status not in ["queued", "processing"]:
         raise HTTPException(status_code=400, detail="只能停止排队中或处理中的会话")
 
-    # 更新状态为 stopped
+    was_queued = session.status == "queued"
     session.status = "stopped"
     session.error_message = "用户手动停止"
     db.commit()
+    if was_queued:
+        await concurrency_manager.cancel_queued(session.session_id)
 
     return {"message": "会话已停止"}

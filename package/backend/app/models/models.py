@@ -55,6 +55,9 @@ class OptimizationSession(Base):
     source_format = Column(String(20), nullable=True)
     source_filename = Column(String(255), nullable=True)
     source_manifest = Column(Text, nullable=True)
+    batch_id = Column(String(64), nullable=True, index=True)
+    batch_index = Column(Integer, nullable=True)
+    preserve_format = Column(Boolean, default=False)
     current_stage = Column(String(50))  # 'polish' 或 'enhance'
     status = Column(String(50), index=True)  # 'queued', 'processing', 'completed', 'failed'
     progress = Column(Float, default=0.0)

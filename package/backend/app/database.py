@@ -87,6 +87,7 @@ def _add_performance_indexes():
             ("idx_opt_session_user_id", "optimization_sessions", "user_id"),
             ("idx_opt_session_status", "optimization_sessions", "status"),
             ("idx_opt_session_created_at", "optimization_sessions", "created_at"),
+            ("idx_opt_session_batch_id", "optimization_sessions", "batch_id"),
 
             # OptimizationSegment indexes
             ("idx_opt_segment_session_id", "optimization_segments", "session_id"),
@@ -167,6 +168,12 @@ def _migrate_database_schema():
                         _add_column_safely(conn, "optimization_sessions", "source_filename", "VARCHAR(255)")
                     if "source_manifest" not in columns:
                         _add_column_safely(conn, "optimization_sessions", "source_manifest", "TEXT")
+                    if "batch_id" not in columns:
+                        _add_column_safely(conn, "optimization_sessions", "batch_id", "VARCHAR(64)")
+                    if "batch_index" not in columns:
+                        _add_column_safely(conn, "optimization_sessions", "batch_index", "INTEGER")
+                    if "preserve_format" not in columns:
+                        _add_column_safely(conn, "optimization_sessions", "preserve_format", "BOOLEAN DEFAULT 0")
 
                 # 迁移 users 表
                 if "users" in tables:

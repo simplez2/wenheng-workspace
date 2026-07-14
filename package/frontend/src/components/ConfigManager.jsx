@@ -27,8 +27,11 @@ const ConfigManager = ({ adminToken }) => {
     COMPRESSION_BASE_URL: '',
     DEFAULT_USAGE_LIMIT: '',
     DEFAULT_TASK_CONCURRENCY_LIMIT: '',
+    MAX_QUEUED_TASKS_PER_USER: '',
     SEGMENT_SKIP_THRESHOLD: '',
     MAX_UPLOAD_FILE_SIZE_MB: '',
+    MAX_BATCH_FILES: '',
+    MAX_BATCH_TOTAL_SIZE_MB: '',
     API_REQUEST_INTERVAL: '',
     THINKING_MODE_ENABLED: true,
     THINKING_MODE_EFFORT: 'high'
@@ -70,8 +73,11 @@ const ConfigManager = ({ adminToken }) => {
         COMPRESSION_BASE_URL: response.data.compression?.base_url || '',
         DEFAULT_USAGE_LIMIT: response.data.system.default_usage_limit?.toString() || '',
         DEFAULT_TASK_CONCURRENCY_LIMIT: response.data.system.default_task_concurrency_limit?.toString() || '1',
+        MAX_QUEUED_TASKS_PER_USER: response.data.system.max_queued_tasks_per_user?.toString() || '100',
         SEGMENT_SKIP_THRESHOLD: response.data.system.segment_skip_threshold?.toString() || '',
         MAX_UPLOAD_FILE_SIZE_MB: response.data.system.max_upload_file_size_mb?.toString() || '',
+        MAX_BATCH_FILES: response.data.system.max_batch_files?.toString() || '20',
+        MAX_BATCH_TOTAL_SIZE_MB: response.data.system.max_batch_total_size_mb?.toString() || '100',
         API_REQUEST_INTERVAL: response.data.system.api_request_interval?.toString() || '6',
         THINKING_MODE_ENABLED: response.data.thinking?.enabled ?? true,
         THINKING_MODE_EFFORT: response.data.thinking?.effort || 'high'
@@ -530,17 +536,65 @@ const ConfigManager = ({ adminToken }) => {
 
           <div>
             <label className="block text-sm font-medium text-gray-500 mb-2">
-              Word 排版文件大小限制 (MB)
+              单文件大小限制 (MB)
             </label>
             <input
               type="number"
               value={formData.MAX_UPLOAD_FILE_SIZE_MB}
               onChange={(e) => setFormData({...formData, MAX_UPLOAD_FILE_SIZE_MB: e.target.value})}
-              placeholder="0"
-              min="0"
+              placeholder="20"
+              min="1"
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
             />
-            <p className="mt-1.5 text-xs text-gray-400">0 表示无限制</p>
+            <p className="mt-1.5 text-xs text-gray-400">润色、排版和检查共用此上传限制</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-2">
+              每用户队列上限
+            </label>
+            <input
+              type="number"
+              value={formData.MAX_QUEUED_TASKS_PER_USER}
+              onChange={(e) => setFormData({...formData, MAX_QUEUED_TASKS_PER_USER: e.target.value})}
+              placeholder="100"
+              min="1"
+              max="1000"
+              className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+            />
+            <p className="mt-1.5 text-xs text-gray-400">包含处理中和排队中的任务，防止无限堆积</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-2">
+              单批文件数量
+            </label>
+            <input
+              type="number"
+              value={formData.MAX_BATCH_FILES}
+              onChange={(e) => setFormData({...formData, MAX_BATCH_FILES: e.target.value})}
+              placeholder="20"
+              min="1"
+              max="100"
+              className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+            />
+            <p className="mt-1.5 text-xs text-gray-400">一次批量导入允许选择的最大文件数</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-500 mb-2">
+              单批总大小 (MB)
+            </label>
+            <input
+              type="number"
+              value={formData.MAX_BATCH_TOTAL_SIZE_MB}
+              onChange={(e) => setFormData({...formData, MAX_BATCH_TOTAL_SIZE_MB: e.target.value})}
+              placeholder="100"
+              min="1"
+              max="2000"
+              className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+            />
+            <p className="mt-1.5 text-xs text-gray-400">限制一个批次所有文件的合计大小</p>
           </div>
         </div>
       </div>

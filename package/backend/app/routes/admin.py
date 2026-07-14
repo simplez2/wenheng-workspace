@@ -274,6 +274,8 @@ async def update_user_usage(
         user.usage_count = 0
     db.commit()
     db.refresh(user)
+    if payload.task_concurrency_limit is not None:
+        await concurrency_manager.update_user_limit(user.id, user.task_concurrency_limit)
     return {
         "id": user.id,
         "usage_limit": user.usage_limit,
@@ -300,9 +302,12 @@ async def admin_stop_session(
     if session.status not in ["queued", "processing"]:
         raise HTTPException(status_code=400, detail="只能停止排队中或处理中的会话")
 
+    was_queued = session.status == "queued"
     session.status = "stopped"
     session.error_message = "管理员手动停止"
     db.commit()
+    if was_queued:
+        await concurrency_manager.cancel_queued(session.session_id)
 
     return {"message": "会话已停止"}
 
