@@ -50,6 +50,43 @@ MAX_BATCH_TOTAL_SIZE_MB=100
 MAX_QUEUED_TASKS_PER_USER=100
 ```
 
+## Agent API 与 CLI
+
+Agent API 使用稳定的版本化路径和标准 Bearer 认证。网页端原有接口保持不变。
+
+- Swagger：`https://your-domain.example/api/v1/agent/docs`
+- OpenAPI：`https://your-domain.example/api/v1/agent/openapi.json`
+- API 根路径：`https://your-domain.example/api/v1/agent`
+
+卡密通过 `Authorization` 请求头传递：
+
+```bash
+curl -H "Authorization: Bearer YOUR_CARD_KEY" \
+  https://your-domain.example/api/v1/agent/capabilities
+
+curl -X POST \
+  -H "Authorization: Bearer YOUR_CARD_KEY" \
+  -F "file=@paper.docx" \
+  -F "processing_mode=paper_polish_enhance" \
+  https://your-domain.example/api/v1/agent/tasks/file
+```
+
+Python SDK 与 CLI 可以直接从仓库安装：
+
+```bash
+pip install "git+https://github.com/simplez2/wenheng-workspace.git@main#subdirectory=clients/python"
+export WENHENG_BASE_URL="https://your-domain.example"
+export WENHENG_API_KEY="YOUR_CARD_KEY"
+
+wenheng capabilities
+wenheng submit paper.docx --wait
+wenheng batch chapter-1.docx chapter-2.pdf --wait
+wenheng status TASK_ID
+```
+
+CLI 的任务元数据输出为 JSON，错误输出到 stderr，适合 shell、CI 和 Agent 工具调用。
+完整说明见 [Agent API](AGENT_API.md) 和 [Python Agent Client](clients/python/README.md)。
+
 生产环境必须设置：
 
 ```dotenv

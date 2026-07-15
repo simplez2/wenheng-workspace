@@ -57,6 +57,7 @@ import uvicorn
 from app.config import reload_settings, settings
 from app.database import init_db
 from app.routes import admin, prompts, optimization
+from app.agent_api import create_agent_app
 from app.word_formatter import router as word_formatter_router
 from app.word_formatter.services import get_job_manager
 from app.models.models import CustomPrompt
@@ -128,6 +129,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(prompts.router, prefix="/api")
 app.include_router(optimization.router, prefix="/api")
 app.include_router(word_formatter_router, prefix="/api")
+app.mount("/api/v1/agent", create_agent_app())
 
 
 @app.on_event("startup")

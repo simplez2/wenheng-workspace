@@ -19,11 +19,15 @@ jobs:
           cache: pip
           cache-dependency-path: package/backend/requirements.txt
       - name: Install backend dependencies
-        run: pip install -r package/backend/requirements.txt pip-audit
+        run: pip install -r package/backend/requirements.txt -e clients/python pip-audit
       - name: Run backend tests
         env:
           PYTHONPATH: package/backend
         run: python -m unittest discover -s package/backend/tests -p "test_*.py" -v
+      - name: Run Agent client tests
+        run: python -m unittest discover -s clients/python/tests -p "test_*.py" -v
+      - name: Check Agent CLI entry point
+        run: wenheng --help
       - name: Audit Python dependencies
         run: pip-audit -r package/backend/requirements.txt
 
