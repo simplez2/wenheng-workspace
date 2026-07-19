@@ -9,7 +9,6 @@ import WordFormatterPage from './pages/WordFormatterPage';
 import SpecGeneratorPage from './pages/SpecGeneratorPage';
 import ArticlePreprocessorPage from './pages/ArticlePreprocessorPage';
 import FormatCheckerPage from './pages/FormatCheckerPage';
-import LegalPage from './pages/LegalPage';
 import './index.css';
 
 const ProtectedRoute = ({ children }) => {
@@ -49,7 +48,6 @@ const AppRoutes = () => {
         <Route path="/" element={<WelcomePage />} />
         <Route path="/access/:cardKey" element={<WelcomePage />} />
         <Route path="/admin" element={<AdminDashboard />} />
-        <Route path="/legal" element={<LegalPage />} />
 
         <Route
           path="/workspace"

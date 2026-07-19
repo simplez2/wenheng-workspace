@@ -1,21 +1,33 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
-  AlertTriangle,
   ArrowRight,
   BookOpen,
+  ClipboardCheck,
+  FileText,
+  History,
   KeyRound,
+  LayoutTemplate,
+  ListChecks,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import { healthAPI } from '../api';
-import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE, LEGAL_PATH } from '../branding';
+import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE } from '../branding';
+
+const WORKSPACE_FEATURES = [
+  { icon: Sparkles, title: '文本优化', description: '润色、增强与长文分段处理' },
+  { icon: LayoutTemplate, title: '文档排版', description: 'Word 与 PDF 原格式处理' },
+  { icon: ListChecks, title: '内容预处理', description: '结构整理与提交前检查' },
+  { icon: ClipboardCheck, title: '格式检查', description: '逐项核对文档规范' },
+  { icon: FileText, title: '规范生成', description: '保存并复用排版要求' },
+  { icon: History, title: '任务管理', description: '批量队列、历史记录与继续处理' },
+];
 
 const WelcomePage = () => {
   const [cardKey, setCardKey] = useState('');
-  const [showNotice, setShowNotice] = useState(false);
-  const [acceptedNotice, setAcceptedNotice] = useState(false);
   const [loading, setLoading] = useState(false);
   const [apiStatus, setApiStatus] = useState(null);
   const navigate = useNavigate();
@@ -49,11 +61,6 @@ const WelcomePage = () => {
       toast.error('请输入访问码');
       return;
     }
-    if (!acceptedNotice) {
-      toast.error('请先阅读并确认使用说明');
-      return;
-    }
-
     if (apiStatus?.overall_status === 'degraded') {
       const allUnavailable = Object.values(apiStatus.models || {}).every(
         (model) => model.status === 'unavailable',
@@ -83,7 +90,7 @@ const WelcomePage = () => {
   return (
     <main className="min-h-screen bg-slate-50 text-slate-950">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-950 text-white">
               <BookOpen className="h-5 w-5" />
@@ -101,33 +108,47 @@ const WelcomePage = () => {
         </div>
       </header>
 
-      <div className="mx-auto grid min-h-[calc(100vh-64px)] max-w-5xl items-center gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_420px] lg:gap-14">
-        <section className="max-w-xl">
-          <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800">
+      <div className="mx-auto grid min-h-[calc(100vh-64px)] max-w-6xl items-center gap-6 px-4 py-6 sm:gap-8 sm:px-6 sm:py-10 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-16 lg:py-14">
+        <section className="max-w-2xl">
+          <div className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700">
             <ShieldCheck className="h-4 w-4" />
             私密文稿处理空间
           </div>
-          <h1 className="mt-5 text-3xl font-semibold leading-tight sm:text-4xl">{APP_NAME}</h1>
-          <p className="mt-4 text-base leading-7 text-slate-600">{APP_DESCRIPTION}</p>
+          <h1 className="mt-4 text-3xl font-semibold leading-tight sm:mt-5 sm:text-4xl">{APP_NAME}</h1>
+          <p className="mt-3 text-base leading-7 text-slate-600 sm:mt-4">{APP_DESCRIPTION}</p>
 
-          <div className="mt-8 border-l-2 border-slate-300 pl-4 text-sm leading-6 text-slate-500">
-            访问码由管理员分配。进入后可继续上次任务，并查看已保存的处理记录。
+          <div className="mt-6 grid grid-cols-2 border-y border-slate-200 sm:mt-9">
+            {WORKSPACE_FEATURES.map(({ icon: Icon, title, description }, index) => (
+              <div
+                key={title}
+                className={`flex min-h-[72px] items-center gap-2.5 py-2.5 sm:min-h-24 sm:gap-3.5 sm:py-4 ${
+                  index % 2 === 0
+                    ? 'pl-0 pr-2 sm:pr-4'
+                    : 'border-l border-slate-200 pl-3 pr-0 sm:px-4'
+                } ${index >= 2 ? 'border-t border-slate-200' : ''}`}
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-white text-blue-700 shadow-sm ring-1 ring-slate-200 sm:h-10 sm:w-10">
+                  <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+                  <p className="mt-1 hidden text-sm leading-5 text-slate-500 sm:block">{description}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-slate-100 text-slate-900">
-              <KeyRound className="h-5 w-5" />
-            </div>
-            <span className="text-xs font-medium text-slate-400">安全访问</span>
+        <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-6 lg:p-7">
+          <div className="flex h-11 w-11 items-center justify-center rounded-md bg-blue-50 text-blue-700">
+            <KeyRound className="h-5 w-5" />
           </div>
 
-          <h2 className="mt-5 text-xl font-semibold">进入工作台</h2>
-          <p className="mt-1.5 text-sm leading-6 text-slate-600">输入管理员分配的访问码。</p>
+          <h2 className="mt-5 text-xl font-semibold sm:mt-6">访问验证</h2>
+          <p className="mt-1.5 text-sm leading-6 text-slate-600">输入访问码，继续处理已有任务或创建新任务。</p>
 
           <form
-            className="mt-6"
+            className="mt-5 sm:mt-6"
             onSubmit={(event) => {
               event.preventDefault();
               handleContinue();
@@ -146,54 +167,15 @@ const WelcomePage = () => {
               className="mt-2 h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-base outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
             />
 
-            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50">
-              <div className="flex items-center justify-between gap-3 px-3 py-2.5">
-                <label className="flex min-w-0 items-center gap-2.5 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={acceptedNotice}
-                    onChange={(event) => setAcceptedNotice(event.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span>我已阅读并理解使用说明</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowNotice((current) => !current)}
-                  className="shrink-0 text-xs font-medium text-blue-600 hover:underline"
-                >
-                  {showNotice ? '收起' : '查看'}
-                </button>
-              </div>
-
-              {showNotice && (
-                <div className="border-t border-slate-200 px-3 py-3 text-xs leading-5 text-slate-600">
-                  <div className="flex gap-2">
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                    <p>
-                      本服务用于语言表达、结构整理和文档处理，不替代独立研究与学术判断。请核对处理结果，并遵守所在机构的相关规定。
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
             <button
               type="submit"
-              disabled={loading || !cardKey.trim() || !acceptedNotice}
-              className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={loading || !cardKey.trim()}
+              className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-blue-700 px-4 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:mt-5"
             >
-              {loading ? '正在验证...' : '进入工作台'}
+              {loading ? '正在验证...' : '验证并继续'}
               {!loading && <ArrowRight className="h-4 w-4" />}
             </button>
           </form>
-
-          <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4 text-xs text-slate-500">
-            <span>访问码仅用于身份验证</span>
-            <Link to={LEGAL_PATH} className="font-medium hover:text-slate-900 hover:underline">
-              开源许可
-            </Link>
-          </div>
         </section>
       </div>
     </main>
